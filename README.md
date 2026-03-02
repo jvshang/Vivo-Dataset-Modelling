@@ -6,7 +6,7 @@ Analysis of EMG and IMU data collected during exoskeleton-assisted walking trial
 
 **The `data/` folder is not included in this repository** (excluded via `.gitignore` due to file size).
 
-The raw data files are stored locally at: /lus/lfs1aip2/projects/b5bb/public
+The raw data files are stored locally at Isambard: /lus/lfs1aip2/projects/b5bb/public
 
 ```
 data/
