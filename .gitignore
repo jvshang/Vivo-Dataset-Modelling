@@ -1,0 +1,33 @@
+# Data files - do not commit to git
+data/
+
+# macOS system files
+.DS_Store
+**/.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.ipynb_checkpoints/
+*.ipynb
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+
+# Output / results
+results/
+output/
+figures/
+*.png
+*.pdf
+*.mat
+*.pkl
+*.npy
+*.npz
