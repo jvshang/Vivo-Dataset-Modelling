@@ -1,17 +1,17 @@
 # VivoProject
 
-Analysis of EMG and IMU data collected during exoskeleton-assisted walking trials.
+Activity recognition pipeline for EMG and IMU data collected during exoskeleton-assisted sit-to-stand trials.
 
 ## Data
 
 **The `data/` folder is not included in this repository** (excluded via `.gitignore` due to file size).
 
-The raw data files are stored locally at Isambard: /lus/lfs1aip2/projects/b5bb/public
+Raw data is stored on Isambard at: `/lus/lfs1aip2/projects/b5bb/public`
 
 ```
 data/
-├── EMG/        # Electromyography recordings
-└── IMU/        # Inertial Measurement Unit recordings
+├── EMG/        # Electromyography recordings (~1926 Hz)
+└── IMU/        # Inertial Measurement Unit recordings (100 Hz)
 ```
 
 ### File naming convention
@@ -27,16 +27,23 @@ e.g. SBJ1_EXO_A_final_EMG.csv
 | Subject | SBJ1 – SBJ6 | Participant ID |
 | Condition | `EXO` / `NoEXO` | With or without exoskeleton |
 | Trial | A – G | Trial letter |
-| Stage | `final` / `trimmed` | Processing stage |
+| Stage | `final` / `trimmed` | Use `final` — contains Activity labels |
 | Modality | `EMG` / `IMU` | Sensor type |
 
-### EMG channels
+> **Note:** SBJ3 has no EXO data (participant did not wear the exoskeleton during data collection).
 
-Rectus Femoris, Vastus Medialis, Vastus Lateralis, Bicep Femoris, Tibialis, Gastrocnemius Medialis
+### Sensor channels
 
-### IMU channels
+| Modality | Channels | Sampling Rate |
+|----------|----------|---------------|
+| EMG | Rectus Femoris, Vastus Medialis, Vastus Lateralis, Bicep Femoris, Tibialis, Gastrocnemius Medialis | ~1926 Hz |
+| IMU | R Thigh Angle, R Shank Angle, L Thigh Angle, L Shank Angle, Hip Angle | 100 Hz |
 
-R Thigh Angle, R Shank Angle, L Thigh Angle, L Shank Angle, Hip Angle
+### Activity labels
+
+`Sat`, `Stood`, `Standing up`, `Sitting down`, `Unknown`
+
+---
 
 ## Project structure
 
@@ -46,22 +53,67 @@ VivoProject_local/
 │   ├── EMG/
 │   └── IMU/
 └── src/
-    ├── dataloader.py   # Data loading utilities
+    ├── dataloader.py   # Data loading, sliding window, benchmark splits
     └── main.py         # Example usage
 ```
+
+---
+
+## Implemented Features
+
+### 1. Data Loading
+- `list_sessions(subject, condition, modality)` — list all available `final` sessions
+- `load_emg(subject, condition, trial)` — load EMG CSV(s) into a DataFrame
+- `load_imu(subject, condition, trial)` — load IMU CSV(s) into a DataFrame (consolidates the 5 separate time columns into one)
+
+### 2. Sliding Window
+- `sliding_windows(df, L, S, fs, feature_cols)` — applies a sliding window to a single session
+  - `L`: window length in seconds
+  - `S`: stride in seconds (`S < L` gives overlapping windows)
+  - Label per window: majority vote; windows where the majority label is `Unknown` are discarded
+  - Returns `X` of shape `(N_windows, window_size, n_features)` and `y` of shape `(N_windows,)`
+
+### 3. Dataset Builder
+- `make_dataset(subjects, conditions, L, S)` — builds a windowed dataset for given subjects and conditions
+  - EMG and IMU are windowed independently at their native sampling rates, then concatenated along the feature axis
+  - Returns flattened `X` of shape `(N_windows, n_features)` and `y`
+  - At `L=0.1` s: feature dim = 192×6 (EMG) + 10×5 (IMU) = **1202**
+
+### 4. Benchmark Splits
+- **Task 1 – General Purpose Training**
+  - Pool: SBJ1, SBJ2, SBJ4, SBJ5, SBJ6 (SBJ3 excluded)
+  - Train: 3 subjects (EXO + NoEXO) | Test: 2 subjects (EXO + NoEXO)
+  - `task1_split(train_subjects, L, S, random_seed)`
+
+- **Task 2 – Exo Challenge**
+  - Train: all 6 subjects, NoEXO only | Test: SBJ1/2/4/5/6, EXO only
+  - `task2_split(L, S)`
+
+---
 
 ## Usage
 
 ```python
-from src.dataloader import list_sessions, load_emg, load_imu
+from src.dataloader import (
+    list_sessions, load_emg, load_imu,
+    sliding_windows, task1_split, task2_split,
+    EMG_FS, IMU_FS, EMG_MUSCLES, IMU_ANGLES,
+)
 
-# List all available sessions
+# List all sessions
 sessions = list_sessions(modality="EMG")
 
 # Load a single session
 emg = load_emg(subject="SBJ1", condition="EXO", trial="A")
 imu = load_imu(subject="SBJ1", condition="EXO", trial="A")
 
-# Load all NoEXO sessions for a subject
-emg_all = load_emg(subject="SBJ2", condition="NoEXO")
+# Sliding window on a single session
+X_emg, y = sliding_windows(emg, L=0.1, S=0.05, fs=EMG_FS, feature_cols=EMG_MUSCLES)
+# X_emg: (N_windows, 192, 6)
+
+# Build Task 1 train/test split
+X_train, y_train, X_test, y_test, train_sbj, test_sbj = task1_split(L=0.1, S=0.05)
+
+# Build Task 2 train/test split
+X_train, y_train, X_test, y_test = task2_split(L=0.1, S=0.05)
 ```
