@@ -93,27 +93,47 @@ VivoProject_local/
 
 ## Usage
 
+Run the demo script from the project root:
+
+```bash
+python src/main.py
+```
+
+Or import directly in your own script (run from project root):
+
 ```python
-from src.dataloader import (
+import sys
+sys.path.insert(0, "src")
+
+from dataloader import (
     list_sessions, load_emg, load_imu,
-    sliding_windows, task1_split, task2_split,
+    sliding_windows, make_dataset,
+    task1_split, task2_split,
     EMG_FS, IMU_FS, EMG_MUSCLES, IMU_ANGLES,
 )
 
-# List all sessions
+# List all available sessions
 sessions = list_sessions(modality="EMG")
 
-# Load a single session
+# Load raw data for a single session
 emg = load_emg(subject="SBJ1", condition="EXO", trial="A")
 imu = load_imu(subject="SBJ1", condition="EXO", trial="A")
 
-# Sliding window on a single session
+# Apply sliding window to a single session
 X_emg, y = sliding_windows(emg, L=0.1, S=0.05, fs=EMG_FS, feature_cols=EMG_MUSCLES)
-# X_emg: (N_windows, 192, 6)
+# X_emg shape: (N_windows, 192, 6)
 
-# Build Task 1 train/test split
+# Build a custom dataset for specific subjects/conditions
+X, y = make_dataset(subjects=["SBJ1", "SBJ2"], conditions=["EXO", "NoEXO"], L=0.1, S=0.05)
+
+# Task 1 – General Purpose (3 train subjects / 2 test subjects)
 X_train, y_train, X_test, y_test, train_sbj, test_sbj = task1_split(L=0.1, S=0.05)
 
-# Build Task 2 train/test split
+# Task 1 with explicit subject selection
+X_train, y_train, X_test, y_test, _, _ = task1_split(
+    train_subjects=["SBJ1", "SBJ2", "SBJ4"], L=0.1, S=0.05
+)
+
+# Task 2 – Exo Challenge (NoEXO → train, EXO → test)
 X_train, y_train, X_test, y_test = task2_split(L=0.1, S=0.05)
 ```
