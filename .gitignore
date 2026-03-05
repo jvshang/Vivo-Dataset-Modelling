@@ -31,3 +31,4 @@ figures/
 *.pkl
 *.npy
 *.npz
+*.log
