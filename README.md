@@ -52,9 +52,11 @@ VivoProject_local/
 ├── data/               # Local only — not in git
 │   ├── EMG/
 │   └── IMU/
-└── src/
-    ├── dataloader.py   # Data loading, sliding window, benchmark splits
-    └── main.py         # Example usage
+├── src/
+│   ├── dataloader.py   # Data loading, sliding window, benchmark splits
+│   ├── train.py        # Training + wandb experiment tracking
+│   └── main.py         # Example usage
+└── sweep.yaml          # wandb sweep config (lead time vs. accuracy grid search)
 ```
 
 ---
@@ -78,6 +80,20 @@ VivoProject_local/
   - EMG and IMU are windowed independently at their native sampling rates, then concatenated along the feature axis
   - Returns flattened `X` of shape `(N_windows, n_features)` and `y`
   - At `L=0.1` s: feature dim = 192×6 (EMG) + 10×5 (IMU) = **1202**
+
+### 5. Experiment Tracking (wandb)
+
+- `train.py` — trains a configurable sklearn classifier and logs four metrics to wandb after each run:
+
+| Metric | wandb key | Description |
+|--------|-----------|-------------|
+| Accuracy | `accuracy` | Test-set classification accuracy |
+| Lead Time | `lead_time_s` | = window length L — minimum data needed before a prediction |
+| Latency | `latency_ms` | Mean single-sample inference time in milliseconds |
+| Model Size | `model_size_mb` | Serialised size in MB; `size_ok = True` if < 5 MB |
+
+- Supported classifiers: Random Forest (`rf`), Gradient Boosting (`gb`), Logistic Regression (`lr`)
+- `sweep.yaml` — grid search over window lengths `[0.05, 0.1, 0.2, 0.5]` s to visualise the lead time vs. accuracy trade-off in the wandb dashboard
 
 ### 4. Benchmark Splits
 - **Task 1 – General Purpose Training**
