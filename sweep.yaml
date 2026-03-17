@@ -1,0 +1,40 @@
+# wandb Sweep configuration
+# Explores the accuracy / lead-time trade-off across window lengths and models.
+#
+# Usage:
+#   wandb sweep sweep.yaml          # prints a sweep-id
+#   wandb agent <sweep-id>          # launches agents (repeat for parallelism)
+
+program: src/train.py
+method: grid
+
+metric:
+  goal: maximize
+  name: accuracy
+
+parameters:
+  task:
+    value: 1
+
+  window_length:
+    # Lead time is directly tied to window length.
+    # Shorter windows → faster response but potentially lower accuracy.
+    values: [0.05, 0.1, 0.2, 0.5]
+
+  stride:
+    value: 0.05
+
+  model:
+    values: [rf, lr]
+
+  n_estimators:
+    value: 50
+
+  max_depth:
+    value: 10
+
+  lr_C:
+    value: 1.0
+
+  lr_max_iter:
+    value: 500
