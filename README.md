@@ -97,9 +97,9 @@ VivoProject_local/
 
 ### 4. Benchmark Splits
 - **Task 1 – General Purpose Training**
-  - Pool: SBJ1, SBJ2, SBJ4, SBJ5, SBJ6 (SBJ3 excluded)
-  - Train: 3 subjects (EXO + NoEXO) | Test: 2 subjects (EXO + NoEXO)
-  - `task1_split(train_subjects, L, S, random_seed)`
+  - Train: 3 subjects (EXO + NoEXO) + SBJ3 (NoEXO only, always included) | Test: 2 subjects (EXO + NoEXO)
+  - Three fixed benchmark splits via `split` argument: `"hard"` (test SBJ5+SBJ6), `"mixed"` (test SBJ1+SBJ5), `"easy"` (test SBJ1+SBJ2)
+  - `task1_split(split="hard", L, S)`
 
 - **Task 2 – Exo Challenge**
   - Train: all 6 subjects, NoEXO only | Test: SBJ1/2/4/5/6, EXO only
