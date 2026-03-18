@@ -31,13 +31,12 @@ from pathlib import Path
 
 import numpy as np
 import wandb
-from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
-from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score
 from sklearn.preprocessing import LabelEncoder
 
 sys.path.insert(0, str(Path(__file__).parent))
 from dataloader import task1_split, task2_split  # noqa: E402
+from models import build_model, available_models  # noqa: E402
 
 
 # ── Default experiment configuration ─────────────────────────────────────────
@@ -55,31 +54,6 @@ DEFAULT_CONFIG = {
     "lr_max_iter": 500,
 }
 
-
-# ── Model factory ─────────────────────────────────────────────────────────────
-
-def build_model(cfg):
-    if cfg.model == "rf":
-        return RandomForestClassifier(
-            n_estimators=cfg.n_estimators,
-            max_depth=cfg.max_depth,
-            random_state=42,
-            n_jobs=-1,
-        )
-    if cfg.model == "gb":
-        return GradientBoostingClassifier(
-            n_estimators=cfg.n_estimators,
-            max_depth=cfg.max_depth,
-            random_state=42,
-        )
-    if cfg.model == "lr":
-        return LogisticRegression(
-            C=cfg.lr_C,
-            max_iter=cfg.lr_max_iter,
-            random_state=42,
-            n_jobs=-1,
-        )
-    raise ValueError(f"Unknown model type: {cfg.model!r}. Choose rf | gb | lr.")
 
 
 # ── Metric helpers ────────────────────────────────────────────────────────────
@@ -200,7 +174,7 @@ def parse_args():
     p.add_argument("--window_length", type=float, default=DEFAULT_CONFIG["window_length"])
     p.add_argument("--stride",        type=float, default=DEFAULT_CONFIG["stride"])
     p.add_argument("--model",         type=str,   default=DEFAULT_CONFIG["model"],
-                   choices=["rf", "gb", "lr"])
+                   choices=available_models())
     p.add_argument("--n_estimators",  type=int,   default=DEFAULT_CONFIG["n_estimators"])
     p.add_argument("--max_depth",     type=int,   default=DEFAULT_CONFIG["max_depth"])
     p.add_argument("--lr_C",          type=float, default=DEFAULT_CONFIG["lr_C"])
