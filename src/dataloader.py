@@ -178,7 +178,7 @@ def sliding_windows(
         # and will be treated as invalid during windowing.
         label_series = pd.Series(labels)
         label_series[~label_series.isin(VALID_ACTIVITIES)] = np.nan
-        label_series = label_series.ffill()
+        label_series = label_series.bfill()
         labels = label_series.to_numpy()
     elif unknown_handling != "drop":
         raise ValueError(f"unknown_handling must be 'drop' or 'backfill', got {unknown_handling!r}")
