@@ -3,3 +3,5 @@ pandas>=2.0
 scikit-learn>=1.4
 wandb>=0.17
 joblib>=1.3
+sktime>=0.30
+torch>=2.0

@@ -45,13 +45,19 @@ DEFAULT_CONFIG = {
     "task": 1,            # 1 = general-purpose, 2 = exo-challenge
     "window_length": 0.1, # L in seconds — directly determines lead time
     "stride": 0.05,       # S in seconds (50% overlap)
-    "model": "rf",        # "rf" | "gb" | "lr"
+    "model": "rf",        # "rf" | "gb" | "lr" | "rocket" | "minirocket"
     # RandomForest / GradientBoosting hyper-params
     "n_estimators": 50,
     "max_depth": 10,
     # Logistic Regression hyper-params
     "lr_C": 1.0,
     "lr_max_iter": 500,
+    # ROCKET / MiniROCKET hyper-params
+    "num_kernels": 10_000,
+    # LSTM-CNN hyper-params
+    "lstm_hidden": 128,
+    "epochs": 30,
+    "batch_size": 256,
 }
 
 
@@ -179,6 +185,10 @@ def parse_args():
     p.add_argument("--max_depth",     type=int,   default=DEFAULT_CONFIG["max_depth"])
     p.add_argument("--lr_C",          type=float, default=DEFAULT_CONFIG["lr_C"])
     p.add_argument("--lr_max_iter",   type=int,   default=DEFAULT_CONFIG["lr_max_iter"])
+    p.add_argument("--num_kernels",   type=int,   default=DEFAULT_CONFIG["num_kernels"])
+    p.add_argument("--lstm_hidden",   type=int,   default=DEFAULT_CONFIG["lstm_hidden"])
+    p.add_argument("--epochs",        type=int,   default=DEFAULT_CONFIG["epochs"])
+    p.add_argument("--batch_size",    type=int,   default=DEFAULT_CONFIG["batch_size"])
     return p.parse_args()
 
 
