@@ -11,15 +11,11 @@ model_size_mb  : Serialised model size in megabytes (target: < 5 MB).
 
 Usage
 -----
-# Single run with default config
+# Run all models and hyperparameter combinations defined in config.yaml
 python src/train.py
 
-# Override any config value from the command line
-python src/train.py --task 2 --window_length 0.2 --model rf
-
-# wandb sweep (define sweep.yaml first, then):
-# wandb sweep sweep.yaml
-# wandb agent <sweep-id>
+# Point to a different config file
+python src/train.py --config experiments/task1.yaml
 """
 
 import argparse
@@ -27,10 +23,12 @@ import io
 import pickle
 import sys
 import time
+from itertools import product
 from pathlib import Path
 
 import numpy as np
 import wandb
+import yaml
 from sklearn.metrics import accuracy_score
 from sklearn.preprocessing import LabelEncoder
 
@@ -39,21 +37,28 @@ from dataloader import task1_split, task2_split  # noqa: E402
 from models import build_model, available_models  # noqa: E402
 
 
-# ── Default experiment configuration ─────────────────────────────────────────
+# ── Config loading ────────────────────────────────────────────────────────────
 
-DEFAULT_CONFIG = {
-    "task": 1,            # 1 = general-purpose, 2 = exo-challenge
-    "window_length": 0.1, # L in seconds — directly determines lead time
-    "stride": 0.05,       # S in seconds (50% overlap)
-    "model": "rf",        # "rf" | "gb" | "lr"
-    # RandomForest / GradientBoosting hyper-params
-    "n_estimators": 50,
-    "max_depth": 10,
-    # Logistic Regression hyper-params
-    "lr_C": 1.0,
-    "lr_max_iter": 500,
-}
+def load_config(path: str) -> dict:
+    with open(path) as f:
+        return yaml.safe_load(f)
 
+
+def expand_grid(cfg: dict) -> list[dict]:
+    """
+    Expand per-model hyperparameter grids into a flat list of run configs.
+
+    Each entry in cfg["models"] is a dict of param → value | [values].
+    Returns one config dict per combination, with "model" set to the model key.
+    """
+    base = {k: v for k, v in cfg.items() if k != "models"}
+    runs = []
+    for model_key, param_grid in cfg["models"].items():
+        keys   = list(param_grid.keys())
+        values = [v if isinstance(v, list) else [v] for v in param_grid.values()]
+        for combo in product(*values):
+            runs.append({**base, "model": model_key, **dict(zip(keys, combo))})
+    return runs
 
 
 # ── Metric helpers ────────────────────────────────────────────────────────────
@@ -93,8 +98,7 @@ def run(config: dict | None = None):
 
     Parameters
     ----------
-    config : dict of hyperparameters. If None, uses DEFAULT_CONFIG.
-             When invoked by a wandb sweep agent the agent injects its own config.
+    config : Flat dict of hyperparameters for a single run, produced by expand_grid.
     """
     with wandb.init(config=config) as run:
         cfg = wandb.config
@@ -170,18 +174,15 @@ def run(config: dict | None = None):
 
 def parse_args():
     p = argparse.ArgumentParser(description="Train + wandb logging for VIVO activity recognition")
-    p.add_argument("--task",          type=int,   default=DEFAULT_CONFIG["task"])
-    p.add_argument("--window_length", type=float, default=DEFAULT_CONFIG["window_length"])
-    p.add_argument("--stride",        type=float, default=DEFAULT_CONFIG["stride"])
-    p.add_argument("--model",         type=str,   default=DEFAULT_CONFIG["model"],
-                   choices=available_models())
-    p.add_argument("--n_estimators",  type=int,   default=DEFAULT_CONFIG["n_estimators"])
-    p.add_argument("--max_depth",     type=int,   default=DEFAULT_CONFIG["max_depth"])
-    p.add_argument("--lr_C",          type=float, default=DEFAULT_CONFIG["lr_C"])
-    p.add_argument("--lr_max_iter",   type=int,   default=DEFAULT_CONFIG["lr_max_iter"])
+    p.add_argument("--config", default="../configs/task1.yaml", help="Path to YAML experiment config")
     return p.parse_args()
 
 
 if __name__ == "__main__":
-    args = parse_args()
-    run(config=vars(args))
+    args   = parse_args()
+    cfg    = load_config(args.config)
+    runs   = expand_grid(cfg)
+    print(f"[train] Config : {args.config}")
+    print(f"[train] Total runs : {len(runs)}")
+    for run_cfg in runs:
+        run(run_cfg)
