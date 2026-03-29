@@ -85,7 +85,8 @@ class RandomForestModel(BaseClassifier):
     def __init__(self, cfg):
         n_est  = cfg.n_estimators if hasattr(cfg, "n_estimators") else cfg.get("n_estimators", 50)
         depth  = cfg.max_depth    if hasattr(cfg, "max_depth")    else cfg.get("max_depth", 10)
-        kwargs = dict(n_estimators=n_est, max_depth=depth, random_state=42)
+        seed   = cfg.seed         if hasattr(cfg, "seed")         else cfg.get("seed", 42)
+        kwargs = dict(n_estimators=n_est, max_depth=depth, random_state=seed)
         print(f"Loading Random Forest with {_DEVICE}")
         if not _CUML:
             kwargs["n_jobs"] = -1
@@ -109,8 +110,9 @@ class GradientBoostingModel(BaseClassifier):
     def __init__(self, cfg):
         n_est  = cfg.n_estimators if hasattr(cfg, "n_estimators") else cfg.get("n_estimators", 50)
         depth  = cfg.max_depth    if hasattr(cfg, "max_depth")    else cfg.get("max_depth", 10)
+        seed   = cfg.seed         if hasattr(cfg, "seed")         else cfg.get("seed", 42)
         self._clf = GradientBoostingClassifier(
-            n_estimators=n_est, max_depth=depth, random_state=42
+            n_estimators=n_est, max_depth=depth, random_state=seed
         )
 
     def fit(self, X, y):
@@ -131,9 +133,10 @@ class XGBoostModel(BaseClassifier):
     def __init__(self, cfg):
         n_est  = cfg.n_estimators if hasattr(cfg, "n_estimators") else cfg.get("n_estimators", 50)
         depth  = cfg.max_depth    if hasattr(cfg, "max_depth")    else cfg.get("max_depth", 10)
+        seed   = cfg.seed         if hasattr(cfg, "seed")         else cfg.get("seed", 42)
         print(f"Loading XGBoost with {_DEVICE}")
         self._clf = XGBClassifier(
-            n_estimators=n_est, max_depth=depth, random_state=42,
+            n_estimators=n_est, max_depth=depth, random_state=seed,
             device="cuda" if _CUML else "cpu",
             eval_metric="mlogloss", verbosity=0,
         )
@@ -156,11 +159,12 @@ class LogisticRegressionModel(BaseClassifier):
     def __init__(self, cfg):
         C        = cfg.lr_C        if hasattr(cfg, "lr_C")        else cfg.get("lr_C", 1.0)
         max_iter = cfg.lr_max_iter if hasattr(cfg, "lr_max_iter") else cfg.get("lr_max_iter", 500)
+        seed     = cfg.seed        if hasattr(cfg, "seed")        else cfg.get("seed", 42)
         kwargs   = dict(C=C, max_iter=max_iter)
         print(f"Loading Logistic Regression with {_DEVICE}")
         if not _CUML:
             kwargs["n_jobs"] = -1
-            kwargs["random_state"] = 42
+            kwargs["random_state"] = seed
         self._clf = LogisticRegression(**kwargs)
 
     def fit(self, X, y):

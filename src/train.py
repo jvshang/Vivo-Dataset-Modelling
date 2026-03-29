@@ -20,7 +20,9 @@ python src/train.py --config experiments/task1.yaml
 
 import argparse
 import io
+import os
 import pickle
+import random
 import sys
 import time
 from itertools import product
@@ -36,6 +38,13 @@ sys.path.insert(0, str(Path(__file__).parent))
 from dataloader import task1_split, task2_split  # noqa: E402
 from models import build_model, available_models  # noqa: E402
 
+# ── Reproducibility ───────────────────────────────────────────────────────────
+
+def set_global_seed(seed: int) -> None:
+    """Seed Python, NumPy, and the OS hash seed for full reproducibility."""
+    random.seed(seed)
+    np.random.seed(seed)
+    os.environ["PYTHONHASHSEED"] = str(seed)
 
 # ── Config loading ────────────────────────────────────────────────────────────
 
@@ -110,6 +119,8 @@ def run(config: dict | None = None):
         # The model cannot produce a prediction until L seconds of sensor data
         # have been collected, so lead_time == window length.
         lead_time_s = L
+
+        set_global_seed(cfg.seed)
 
         # ── Load benchmark split ──────────────────────────────────────────────
         print(f"\n[wandb run: {run.name}]  task={cfg.task}  L={L}s  model={cfg.model}")

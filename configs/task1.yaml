@@ -1,4 +1,5 @@
 # ── Experiment settings ───────────────────────────────────────────────────────
+seed:             42      # global random seed for numpy, Python, and all models
 task:             1       # 1 = generalisation across participants, 2 = exo challenge
 window_length:    0.1     # L in seconds — directly determines lead time
 stride:           0.05    # S in seconds (50% overlap)
