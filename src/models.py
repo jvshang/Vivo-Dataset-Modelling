@@ -7,7 +7,16 @@ Adding a new model
 2. Register it with @register_model("your_key").
 3. Add its hyperparameters to DEFAULT_CONFIG in train.py if needed.
 
-Available keys: rf | gb | lr
+Available keys: rf | gb | lr | xgb | rocket | minirocket | tsf | lstmcnn
+
+sktime models (rocket, minirocket)
+-----------------------------------
+sktime classifiers expect 3-D input (n_samples, n_channels, n_timepoints).
+The current pipeline provides flat 2-D windows (n_samples, n_features) that
+are the concatenation of EMG and IMU windows at their native sampling rates.
+These wrappers reshape to (n_samples, 1, n_features), treating the entire
+feature vector as a single-channel time series.  A future improvement would
+be to pass the original multi-channel 3-D windows directly.
 """
 
 from __future__ import annotations
@@ -176,3 +185,190 @@ class LogisticRegressionModel(BaseClassifier):
 
     def predict_proba(self, X):
         return self._clf.predict_proba(X)
+
+
+# ── sktime wrappers ───────────────────────────────────────────────────────────
+# Input X is 2-D (n_samples, n_features). sktime classifiers need 3-D
+# (n_samples, n_channels, n_timepoints), so we add a channel dimension.
+
+def _to_3d(X: np.ndarray) -> np.ndarray:
+    """Reshape (N, F) → (N, 1, F) for sktime classifiers."""
+    return X[:, np.newaxis, :]
+
+
+@register_model("rocket")
+class RocketModel(BaseClassifier):
+    name = "ROCKET"
+
+    def __init__(self, cfg):
+        from sktime.classification.kernel_based import RocketClassifier
+        n_kernels = (
+            cfg.num_kernels if hasattr(cfg, "num_kernels") else cfg.get("num_kernels", 10_000)
+        )
+        self._clf = RocketClassifier(num_kernels=n_kernels, random_state=42, n_jobs=-1)
+
+    def fit(self, X, y):
+        self._clf.fit(_to_3d(X), y)
+        return self
+
+    def predict(self, X):
+        return self._clf.predict(_to_3d(X))
+
+    def predict_proba(self, X):
+        return self._clf.predict_proba(_to_3d(X))
+
+
+@register_model("minirocket")
+class MiniRocketModel(BaseClassifier):
+    name = "MiniROCKET"
+
+    def __init__(self, cfg):
+        from sktime.classification.kernel_based import MiniRocketClassifier
+        n_kernels = (
+            cfg.num_kernels if hasattr(cfg, "num_kernels") else cfg.get("num_kernels", 10_000)
+        )
+        self._clf = MiniRocketClassifier(num_kernels=n_kernels, random_state=42, n_jobs=-1)
+
+    def fit(self, X, y):
+        self._clf.fit(_to_3d(X), y)
+        return self
+
+    def predict(self, X):
+        return self._clf.predict(_to_3d(X))
+
+    def predict_proba(self, X):
+        return self._clf.predict_proba(_to_3d(X))
+
+
+@register_model("tsf")
+class TimeSeriesForestModel(BaseClassifier):
+    name = "Time Series Forest"
+
+    def __init__(self, cfg):
+        from sktime.classification.interval_based import TimeSeriesForestClassifier
+        n_est = (
+            cfg.n_estimators if hasattr(cfg, "n_estimators") else cfg.get("n_estimators", 50)
+        )
+        self._clf = TimeSeriesForestClassifier(
+            n_estimators=n_est, random_state=42, n_jobs=-1
+        )
+
+    def fit(self, X, y):
+        self._clf.fit(_to_3d(X), y)
+        return self
+
+    def predict(self, X):
+        return self._clf.predict(_to_3d(X))
+
+    def predict_proba(self, X):
+        return self._clf.predict_proba(_to_3d(X))
+
+
+# ── LSTM-CNN hybrid (PyTorch) ─────────────────────────────────────────────────
+# Architecture:
+#   Conv1d stack  – extract local patterns across the feature/time axis
+#   LSTM          – model sequential dependencies across the convolved output
+#   FC            – map last hidden state to class logits
+#
+# Input X is 2-D (N, F); we treat the F-length vector as a univariate time
+# series fed into Conv1d channels-first: (N, 1, F).
+
+class _LSTMCNNNet:
+    """Thin wrapper so the net is only built once fit() knows input shape."""
+
+    def __init__(self, n_features: int, n_classes: int, hidden: int):
+        import torch.nn as nn
+
+        class _Net(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.cnn = nn.Sequential(
+                    nn.Conv1d(1, 64, kernel_size=8, padding=4),
+                    nn.BatchNorm1d(64),
+                    nn.ReLU(),
+                    nn.Conv1d(64, 64, kernel_size=5, padding=2),
+                    nn.BatchNorm1d(64),
+                    nn.ReLU(),
+                )
+                self.lstm = nn.LSTM(
+                    input_size=64, hidden_size=hidden,
+                    num_layers=2, batch_first=True, dropout=0.3,
+                )
+                self.fc = nn.Linear(hidden, n_classes)
+
+            def forward(self, x):          # x: (B, 1, F)
+                x = self.cnn(x)            # (B, 64, F')
+                x = x.permute(0, 2, 1)    # (B, F', 64) — seq-first for LSTM
+                _, (h, _) = self.lstm(x)  # h: (layers, B, hidden)
+                return self.fc(h[-1])      # (B, n_classes)
+
+        self.net = _Net()
+
+
+@register_model("lstmcnn")
+class LSTMCNNModel(BaseClassifier):
+    name = "LSTM-CNN"
+
+    def __init__(self, cfg):
+        self._hidden     = cfg.lstm_hidden  if hasattr(cfg, "lstm_hidden")  else cfg.get("lstm_hidden",  128)
+        self._epochs     = cfg.epochs       if hasattr(cfg, "epochs")       else cfg.get("epochs",       30)
+        self._batch_size = cfg.batch_size   if hasattr(cfg, "batch_size")   else cfg.get("batch_size",   256)
+        self._net        = None
+        self._classes    = None
+
+    def _device(self):
+        import torch
+        if torch.cuda.is_available():
+            return torch.device("cuda")
+        if torch.backends.mps.is_available():
+            return torch.device("mps")
+        return torch.device("cpu")
+
+    def fit(self, X: np.ndarray, y: np.ndarray) -> "LSTMCNNModel":
+        import torch
+        import torch.nn as nn
+        from torch.utils.data import DataLoader, TensorDataset
+
+        self._classes = np.unique(y)
+        n_classes  = len(self._classes)
+        n_features = X.shape[1]
+        device     = self._device()
+
+        wrapper = _LSTMCNNNet(n_features, n_classes, self._hidden)
+        self._net = wrapper.net.to(device)
+
+        X_t = torch.tensor(X[:, np.newaxis, :], dtype=torch.float32)  # (N,1,F)
+        y_t = torch.tensor(y.astype(np.int64))
+        loader = DataLoader(
+            TensorDataset(X_t, y_t),
+            batch_size=self._batch_size, shuffle=True, drop_last=False,
+        )
+
+        optimiser = torch.optim.Adam(self._net.parameters(), lr=1e-3)
+        criterion = nn.CrossEntropyLoss()
+        self._net.train()
+        for _ in range(self._epochs):
+            for xb, yb in loader:
+                xb, yb = xb.to(device), yb.to(device)
+                optimiser.zero_grad()
+                criterion(self._net(xb), yb).backward()
+                optimiser.step()
+        return self
+
+    def _forward(self, X: np.ndarray):
+        import torch
+        self._net.eval()
+        device = self._device()
+        X_t = torch.tensor(X[:, np.newaxis, :], dtype=torch.float32).to(device)
+        with torch.no_grad():
+            logits = self._net(X_t)
+        return logits.cpu().numpy()
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        return self._classes[self._forward(X).argmax(axis=1)]
+
+    def predict_proba(self, X: np.ndarray) -> np.ndarray:
+        import torch
+        logits = self._forward(X)
+        exp    = np.exp(logits - logits.max(axis=1, keepdims=True))
+        return exp / exp.sum(axis=1, keepdims=True)
