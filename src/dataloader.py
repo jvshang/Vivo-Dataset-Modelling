@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 
-DATA_DIR = Path(__file__).parent.parent / "data"
+DATA_DIR = "/lus/lfs1aip2/projects/b5bb/public/final_data"
 
 # ── Sampling frequencies ─────────────────────────────────────────────────────
 # EMG:  ~1/0.000519 s ≈ 1926 Hz
@@ -63,7 +63,7 @@ def _parse_filename(fname: str) -> Optional[dict]:
 
 def list_sessions(subject=None, condition=None, modality="EMG") -> List[dict]:
     """Return metadata dicts for all matching *final* sessions."""
-    folder = DATA_DIR / modality
+    folder = f"{DATA_DIR}/{modality}"
     sessions = []
     for fname in sorted(os.listdir(folder)):
         info = _parse_filename(fname)
@@ -73,7 +73,7 @@ def list_sessions(subject=None, condition=None, modality="EMG") -> List[dict]:
             continue
         if condition and info["condition"] != condition:
             continue
-        info["path"] = folder / fname
+        info["path"] = f"{folder}/{fname}"
         sessions.append(info)
     return sessions
 

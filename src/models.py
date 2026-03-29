@@ -16,8 +16,19 @@ import abc
 from typing import Dict, Type
 
 import numpy as np
-from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
-from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import GradientBoostingClassifier
+from xgboost import XGBClassifier
+
+try:
+    from cuml.ensemble import RandomForestClassifier
+    from cuml.linear_model import LogisticRegression
+    _CUML = True
+except ImportError:
+    from sklearn.ensemble import RandomForestClassifier
+    from sklearn.linear_model import LogisticRegression
+    _CUML = False
+
+_DEVICE = "GPU (cuML)" if _CUML else "CPU (sklearn)"
 
 
 # ── Base class ────────────────────────────────────────────────────────────────
@@ -74,9 +85,11 @@ class RandomForestModel(BaseClassifier):
     def __init__(self, cfg):
         n_est  = cfg.n_estimators if hasattr(cfg, "n_estimators") else cfg.get("n_estimators", 50)
         depth  = cfg.max_depth    if hasattr(cfg, "max_depth")    else cfg.get("max_depth", 10)
-        self._clf = RandomForestClassifier(
-            n_estimators=n_est, max_depth=depth, random_state=42, n_jobs=-1
-        )
+        kwargs = dict(n_estimators=n_est, max_depth=depth, random_state=42)
+        print(f"Loading Random Forest with {_DEVICE}")
+        if not _CUML:
+            kwargs["n_jobs"] = -1
+        self._clf = RandomForestClassifier(**kwargs)
 
     def fit(self, X, y):
         self._clf.fit(X, y)
@@ -111,6 +124,31 @@ class GradientBoostingModel(BaseClassifier):
         return self._clf.predict_proba(X)
 
 
+@register_model("xgb")
+class XGBoostModel(BaseClassifier):
+    name = "XGBoost"
+
+    def __init__(self, cfg):
+        n_est  = cfg.n_estimators if hasattr(cfg, "n_estimators") else cfg.get("n_estimators", 50)
+        depth  = cfg.max_depth    if hasattr(cfg, "max_depth")    else cfg.get("max_depth", 10)
+        print(f"Loading XGBoost with {_DEVICE}")
+        self._clf = XGBClassifier(
+            n_estimators=n_est, max_depth=depth, random_state=42,
+            device="cuda" if _CUML else "cpu",
+            eval_metric="mlogloss", verbosity=0,
+        )
+
+    def fit(self, X, y):
+        self._clf.fit(X, y)
+        return self
+
+    def predict(self, X):
+        return self._clf.predict(X)
+
+    def predict_proba(self, X):
+        return self._clf.predict_proba(X)
+
+
 @register_model("lr")
 class LogisticRegressionModel(BaseClassifier):
     name = "Logistic Regression"
@@ -118,9 +156,12 @@ class LogisticRegressionModel(BaseClassifier):
     def __init__(self, cfg):
         C        = cfg.lr_C        if hasattr(cfg, "lr_C")        else cfg.get("lr_C", 1.0)
         max_iter = cfg.lr_max_iter if hasattr(cfg, "lr_max_iter") else cfg.get("lr_max_iter", 500)
-        self._clf = LogisticRegression(
-            C=C, max_iter=max_iter, random_state=42, n_jobs=-1
-        )
+        kwargs   = dict(C=C, max_iter=max_iter)
+        print(f"Loading Logistic Regression with {_DEVICE}")
+        if not _CUML:
+            kwargs["n_jobs"] = -1
+            kwargs["random_state"] = 42
+        self._clf = LogisticRegression(**kwargs)
 
     def fit(self, X, y):
         self._clf.fit(X, y)
