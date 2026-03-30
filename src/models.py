@@ -28,6 +28,9 @@ import numpy as np
 from sklearn.ensemble import GradientBoostingClassifier
 from xgboost import XGBClassifier
 
+import torch
+import torch.nn as nn
+
 try:
     from cuml.ensemble import RandomForestClassifier
     from cuml.linear_model import LogisticRegression
@@ -205,7 +208,8 @@ class RocketModel(BaseClassifier):
         n_kernels = (
             cfg.num_kernels if hasattr(cfg, "num_kernels") else cfg.get("num_kernels", 10_000)
         )
-        self._clf = RocketClassifier(num_kernels=n_kernels, random_state=42, n_jobs=-1)
+        seed   = cfg.seed         if hasattr(cfg, "seed")         else cfg.get("seed", 42)
+        self._clf = RocketClassifier(num_kernels=n_kernels, random_state=seed, n_jobs=-1)
 
     def fit(self, X, y):
         self._clf.fit(_to_3d(X), y)
@@ -227,7 +231,8 @@ class MiniRocketModel(BaseClassifier):
         n_kernels = (
             cfg.num_kernels if hasattr(cfg, "num_kernels") else cfg.get("num_kernels", 10_000)
         )
-        self._clf = MiniRocketClassifier(num_kernels=n_kernels, random_state=42, n_jobs=-1)
+        seed   = cfg.seed         if hasattr(cfg, "seed")         else cfg.get("seed", 42)
+        self._clf = MiniRocketClassifier(num_kernels=n_kernels, random_state=seed, n_jobs=-1)
 
     def fit(self, X, y):
         self._clf.fit(_to_3d(X), y)
@@ -249,8 +254,9 @@ class TimeSeriesForestModel(BaseClassifier):
         n_est = (
             cfg.n_estimators if hasattr(cfg, "n_estimators") else cfg.get("n_estimators", 50)
         )
+        seed   = cfg.seed         if hasattr(cfg, "seed")         else cfg.get("seed", 42)
         self._clf = TimeSeriesForestClassifier(
-            n_estimators=n_est, random_state=42, n_jobs=-1
+            n_estimators=n_est, random_state=seed, n_jobs=-1
         )
 
     def fit(self, X, y):
@@ -277,7 +283,6 @@ class _LSTMCNNNet:
     """Thin wrapper so the net is only built once fit() knows input shape."""
 
     def __init__(self, n_features: int, n_classes: int, hidden: int):
-        import torch.nn as nn
 
         class _Net(nn.Module):
             def __init__(self):
@@ -313,11 +318,36 @@ class LSTMCNNModel(BaseClassifier):
         self._hidden     = cfg.lstm_hidden  if hasattr(cfg, "lstm_hidden")  else cfg.get("lstm_hidden",  128)
         self._epochs     = cfg.epochs       if hasattr(cfg, "epochs")       else cfg.get("epochs",       30)
         self._batch_size = cfg.batch_size   if hasattr(cfg, "batch_size")   else cfg.get("batch_size",   256)
+        self._seed       = cfg.seed         if hasattr(cfg, "seed")         else cfg.get("seed",         None)
         self._net        = None
         self._classes    = None
 
+    # ------------------------------------------------------------------
+    # Reproducibility
+    # ------------------------------------------------------------------
+    def _seed_everything(self) -> None:
+        """Seed all RNGs that affect training.  No-op when seed is None."""
+        if self._seed is None:
+            return
+        import random, torch
+        random.seed(self._seed)
+        np.random.seed(self._seed)
+        torch.manual_seed(self._seed)
+        torch.cuda.manual_seed_all(self._seed)
+        # Sacrifice a little speed for deterministic CUDA kernels
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark     = False
+
+    def _make_generator(self):
+        """Return a seeded (or unseeded) torch.Generator for the DataLoader."""
+        g = torch.Generator()
+        if self._seed is not None:
+            g.manual_seed(self._seed)
+        return g
+
+    # ------------------------------------------------------------------
+
     def _device(self):
-        import torch
         if torch.cuda.is_available():
             return torch.device("cuda")
         if torch.backends.mps.is_available():
@@ -325,9 +355,10 @@ class LSTMCNNModel(BaseClassifier):
         return torch.device("cpu")
 
     def fit(self, X: np.ndarray, y: np.ndarray) -> "LSTMCNNModel":
-        import torch
-        import torch.nn as nn
+
         from torch.utils.data import DataLoader, TensorDataset
+
+        self._seed_everything()  # seed before any weight init or data shuffling
 
         self._classes = np.unique(y)
         n_classes  = len(self._classes)
@@ -341,7 +372,14 @@ class LSTMCNNModel(BaseClassifier):
         y_t = torch.tensor(y.astype(np.int64))
         loader = DataLoader(
             TensorDataset(X_t, y_t),
-            batch_size=self._batch_size, shuffle=True, drop_last=False,
+            batch_size=self._batch_size,
+            shuffle=True,
+            drop_last=False,
+            generator=self._make_generator(),   # reproducible shuffle order
+            worker_init_fn=(                    # seed DataLoader workers too
+                (lambda wid: np.random.seed(self._seed + wid))
+                if self._seed is not None else None
+            ),
         )
 
         optimiser = torch.optim.Adam(self._net.parameters(), lr=1e-3)
@@ -356,7 +394,6 @@ class LSTMCNNModel(BaseClassifier):
         return self
 
     def _forward(self, X: np.ndarray):
-        import torch
         self._net.eval()
         device = self._device()
         X_t = torch.tensor(X[:, np.newaxis, :], dtype=torch.float32).to(device)
@@ -368,7 +405,6 @@ class LSTMCNNModel(BaseClassifier):
         return self._classes[self._forward(X).argmax(axis=1)]
 
     def predict_proba(self, X: np.ndarray) -> np.ndarray:
-        import torch
         logits = self._forward(X)
         exp    = np.exp(logits - logits.max(axis=1, keepdims=True))
         return exp / exp.sum(axis=1, keepdims=True)
