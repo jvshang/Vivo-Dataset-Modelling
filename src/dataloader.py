@@ -102,7 +102,16 @@ def load_emg(subject=None, condition=None, trial=None) -> pd.DataFrame:
 
 
 def load_imu(subject=None, condition=None, trial=None) -> pd.DataFrame:
-    """Load one or more final_IMU files into a single DataFrame."""
+    """
+    Load one or more final_IMU files into a single DataFrame.
+
+    Missing IMU values (sensor dropouts) are zero-filled, guaranteeing a
+    fixed-length feature vector across all sessions.
+
+    Returns
+    -------
+    df : Cleaned DataFrame. All IMU_ANGLES columns are always present with no NaNs.
+    """
     sessions = list_sessions(subject=subject, condition=condition, modality="IMU")
     if trial:
         sessions = [s for s in sessions if s["trial"] == trial]
@@ -123,7 +132,11 @@ def load_imu(subject=None, condition=None, trial=None) -> pd.DataFrame:
         raise FileNotFoundError(
             f"No IMU files found for subject={subject}, condition={condition}, trial={trial}"
         )
-    return pd.concat(frames, ignore_index=True)
+    df = pd.concat(frames, ignore_index=True)
+
+    df[IMU_ANGLES] = df[IMU_ANGLES].fillna(0.0)
+
+    return df
 
 
 # ── Sliding window ────────────────────────────────────────────────────────────
