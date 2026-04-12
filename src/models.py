@@ -48,7 +48,9 @@ _DEVICE = "GPU (cuML)" if _CUML else "CPU (sklearn)"
 class BaseClassifier(abc.ABC):
     """Common interface for all activity classifiers."""
 
-    name: str  # human-readable name shown in logs / wandb
+    name: str        # human-readable name shown in logs / wandb
+    _needs_3d: bool = False  # True for sktime classifiers that expect (N, C, T) input
+    _is_torch: bool = False  # True for PyTorch models that need a custom CV loop
 
     @abc.abstractmethod
     def fit(self, X: np.ndarray, y: np.ndarray) -> "BaseClassifier":
@@ -169,9 +171,9 @@ class LogisticRegressionModel(BaseClassifier):
     name = "Logistic Regression"
 
     def __init__(self, cfg):
-        C        = cfg.lr_C        if hasattr(cfg, "lr_C")        else cfg.get("lr_C", 1.0)
-        max_iter = cfg.lr_max_iter if hasattr(cfg, "lr_max_iter") else cfg.get("lr_max_iter", 500)
-        seed     = cfg.seed        if hasattr(cfg, "seed")        else cfg.get("seed", 42)
+        C        = cfg.C        if hasattr(cfg, "C")        else cfg.get("C", 1.0)
+        max_iter = cfg.max_iter if hasattr(cfg, "max_iter") else cfg.get("max_iter", 500)
+        seed     = cfg.seed     if hasattr(cfg, "seed")     else cfg.get("seed", 42)
         kwargs   = dict(C=C, max_iter=max_iter)
         print(f"Loading Logistic Regression with {_DEVICE}")
         if not _CUML:
@@ -201,7 +203,8 @@ def _to_3d(X: np.ndarray) -> np.ndarray:
 
 @register_model("rocket")
 class RocketModel(BaseClassifier):
-    name = "ROCKET"
+    name      = "ROCKET"
+    _needs_3d = True
 
     def __init__(self, cfg):
         from sktime.classification.kernel_based import RocketClassifier
@@ -224,7 +227,8 @@ class RocketModel(BaseClassifier):
 
 @register_model("minirocket")
 class MiniRocketModel(BaseClassifier):
-    name = "MiniROCKET"
+    name      = "MiniROCKET"
+    _needs_3d = True
 
     def __init__(self, cfg):
         from sktime.classification.kernel_based import MiniRocketClassifier
@@ -247,7 +251,8 @@ class MiniRocketModel(BaseClassifier):
 
 @register_model("tsf")
 class TimeSeriesForestModel(BaseClassifier):
-    name = "Time Series Forest"
+    name      = "Time Series Forest"
+    _needs_3d = True
 
     def __init__(self, cfg):
         from sktime.classification.interval_based import TimeSeriesForestClassifier
@@ -312,7 +317,8 @@ class _LSTMCNNNet:
 
 @register_model("lstmcnn")
 class LSTMCNNModel(BaseClassifier):
-    name = "LSTM-CNN"
+    name      = "LSTM-CNN"
+    _is_torch = True
 
     def __init__(self, cfg):
         self._hidden     = cfg.lstm_hidden  if hasattr(cfg, "lstm_hidden")  else cfg.get("lstm_hidden",  128)

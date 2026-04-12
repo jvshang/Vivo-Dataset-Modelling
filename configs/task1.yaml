@@ -4,24 +4,34 @@ task:             1       # 1 = generalisation across participants, 2 = exo chal
 window_length:    0.1     # L in seconds — directly determines lead time
 stride:           0.05    # S in seconds (50% overlap)
 unknown_handling: drop    # "drop" | "backfill"
+cv_folds:         5       # number of cross-validation folds for grid search
 
 # ── Per-model hyperparameter grids ────────────────────────────────────────────
 # Each key must match a registered model key (rf | gb | xgb | lr).
-# Scalar values are treated as a single-element grid.
-# All combinations are enumerated and run as separate wandb runs.
+# param_grid keys must match the underlying sklearn/cuML estimator's __init__ params.
 models:
   rf:
-    n_estimators: [50, 100, 200]
-    max_depth:    [5, 10, 20]
+    param_grid:
+      n_estimators: [50, 100, 200]
+      max_depth:    [5, 10, 20]
 
   xgb:
-    n_estimators: [50, 100, 200]
-    max_depth:    [3, 6, 10]
+    param_grid:
+      n_estimators: [50, 100, 200]
+      max_depth:    [3, 6, 10]
 
   gb:
-    n_estimators: [50, 100]
-    max_depth:    [3, 5, 10]
+    param_grid:
+      n_estimators: [50, 100]
+      max_depth:    [3, 5, 10]
 
   lr:
-    lr_C:        [0.01, 0.1, 1.0, 10.0]
-    lr_max_iter: 500
+    param_grid:
+      C:        [0.01, 0.1, 1.0, 10.0]
+      max_iter: [500]
+
+  lstmcnn:
+    param_grid:
+      lstm_hidden: [64, 128]
+      epochs:      [10, 20]
+      batch_size:  [128, 256]
