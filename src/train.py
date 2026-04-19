@@ -4,6 +4,7 @@ train.py – Experiment runner with Weights & Biases tracking.
 Tracked metrics
 ---------------
 accuracy       : Classification accuracy on the held-out test split.
+auc            : Macro-average one-vs-rest ROC AUC on the held-out test split.
 cv_best_score  : Best mean cross-validated accuracy from grid search.
 lead_time_s    : Minimum data window required before a prediction (= L seconds).
                  Longer windows → higher potential accuracy but greater delay.
@@ -29,13 +30,20 @@ import time
 from itertools import product
 from pathlib import Path
 
+import matplotlib.pyplot as plt
 import numpy as np
 import wandb
 import yaml
 from sklearn.base import BaseEstimator, ClassifierMixin
-from sklearn.metrics import accuracy_score
+from sklearn.metrics import (
+    ConfusionMatrixDisplay,
+    accuracy_score,
+    confusion_matrix,
+    roc_auc_score,
+    roc_curve,
+)
 from sklearn.model_selection import GridSearchCV, StratifiedKFold
-from sklearn.preprocessing import LabelEncoder
+from sklearn.preprocessing import LabelBinarizer, LabelEncoder
 
 sys.path.insert(0, str(Path(__file__).parent))
 from dataloader import task1_split, task2_split  # noqa: E402
@@ -95,6 +103,9 @@ class _GridSearchEstimator(BaseEstimator, ClassifierMixin):
 
     def predict(self, X):
         return self.clf.predict(self._maybe_3d(X))
+
+    def predict_proba(self, X):
+        return self.clf.predict_proba(self._maybe_3d(X))
 
     def get_params(self, deep: bool = True) -> dict:
         out = {"clf": self.clf, "needs_3d": self.needs_3d}
@@ -181,6 +192,119 @@ def inference_latency_ms(model, X: np.ndarray, n_repeats: int = 200) -> float:
 
     return float(np.mean(durations)) * 1000  # convert to ms
 
+# ── Per-run plots ─────────────────────────────────────────────────────────────
+
+def _log_confusion_matrix(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    class_names: list[str],
+    out_dir: Path,
+) -> None:
+    """Log a labelled confusion matrix to the active wandb run and save as PNG."""
+    fig, ax = plt.subplots(figsize=(6, 5))
+    ConfusionMatrixDisplay(
+        confusion_matrix(y_true, y_pred),
+        display_labels=class_names,
+    ).plot(ax=ax, colorbar=False, xticks_rotation=45)
+    ax.set_title("Confusion Matrix")
+    fig.tight_layout()
+    fig.savefig(out_dir / "confusion_matrix.png", dpi=150)
+    wandb.log({"confusion_matrix": wandb.Image(fig)})
+    plt.close(fig)
+
+
+def _log_roc_curves(
+    y_true: np.ndarray,
+    y_proba: np.ndarray,
+    class_names: list[str],
+    out_dir: Path,
+) -> float:
+    """
+    Log per-class ROC curves and return macro-average AUC.
+    Uses one-vs-rest binarisation for multiclass problems.
+    """
+    lb      = LabelBinarizer().fit(y_true)
+    y_bin   = lb.transform(y_true)
+    n_cls   = len(class_names)
+
+    fig, ax = plt.subplots(figsize=(6, 5))
+    aucs    = []
+    for i, name in enumerate(class_names):
+        col   = y_bin[:, i] if n_cls > 2 else y_bin[:, 0]
+        prob  = y_proba[:, i]
+        fpr, tpr, _ = roc_curve(col, prob)
+        auc_val     = roc_auc_score(col, prob)
+        aucs.append(auc_val)
+        ax.plot(fpr, tpr, label=f"{name} (AUC={auc_val:.2f})")
+
+    ax.plot([0, 1], [0, 1], "k--", linewidth=0.8)
+    ax.set_xlabel("False Positive Rate")
+    ax.set_ylabel("True Positive Rate")
+    ax.set_title("ROC Curves (one-vs-rest)")
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    fig.savefig(out_dir / "roc_curves.png", dpi=150)
+    wandb.log({"roc_curves": wandb.Image(fig)})
+    plt.close(fig)
+
+    return float(np.mean(aucs))
+
+
+# ── Comparative plots ─────────────────────────────────────────────────────────
+
+def compare_models(results: list[dict], L: float, S: float, out_dir: Path) -> None:
+    """
+    Save comparative bar charts for all models evaluated at the same (L, S).
+
+    Plots: accuracy, AUC, latency (ms), model size (MB).
+    Saved to out_dir/comparison_L{L}_S{S}.png and also logged to a dedicated
+    wandb run so they appear alongside the per-model runs.
+    """
+    metrics  = ["accuracy", "auc", "latency_ms", "model_size_mb"]
+    titles   = ["Accuracy", "Macro AUC", "Latency (ms)", "Model size (MB)"]
+    models   = [r["model"] for r in results]
+    fig, axes = plt.subplots(1, len(metrics), figsize=(5 * len(metrics), 4))
+    fig.suptitle(f"Model comparison  —  L={L}s  S={S}s", fontsize=13)
+
+    for ax, metric, title in zip(axes, metrics, titles):
+        values = [r[metric] for r in results]
+        bars   = ax.bar(models, values)
+        ax.set_title(title)
+        ax.set_ylim(0, max(values) * 1.2)
+        ax.tick_params(axis="x", rotation=30)
+        for bar, val in zip(bars, values):
+            ax.text(
+                bar.get_x() + bar.get_width() / 2,
+                bar.get_height() + max(values) * 0.02,
+                f"{val:.3f}", ha="center", va="bottom", fontsize=8,
+            )
+
+    fig.tight_layout()
+    path = out_dir / f"comparison_L{L}_S{S}.png"
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+    print(f"[compare] Saved {path}")
+
+    run_dir = out_dir / f"comparison_L{L}_S{S}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    with wandb.init(
+        name=f"comparison_L{L}_S{S}",
+        dir=run_dir,
+        config={"window_length": L, "stride": S, "type": "comparison"},
+    ):
+        wandb.log({"model_comparison": wandb.Image(str(path))})
+        # Also log each metric as a bar-chart table for the wandb UI
+        for metric, title in zip(metrics, titles):
+            wandb.log({
+                f"comparison/{metric}": wandb.plot.bar(
+                    wandb.Table(
+                        columns=["model", metric],
+                        data=[[r["model"], r[metric]] for r in results],
+                    ),
+                    "model", metric, title=title,
+                )
+            })
+
 
 # ── Core experiment ───────────────────────────────────────────────────────────
 
@@ -188,15 +312,7 @@ def run(model_key: str, param_grid: dict, base_cfg: dict, L: float, S: float):
     """
     Run grid search for one model + (L, S) combo and log all metrics to wandb.
 
-    Parameters
-    ----------
-    model_key  : Registered model key (e.g. "rf").
-    param_grid : Hyperparameter grid.
-                 sklearn/sktime/xgb models → passed to GridSearchCV directly.
-                 PyTorch models           → iterated manually in _torch_cv.
-    base_cfg   : Shared experiment settings (task, seed, cv_folds, etc.).
-    L          : Window length in seconds.
-    S          : Stride in seconds.
+    Returns a results dict for use in compare_models().
     """
     run_cfg  = {**base_cfg, "model": model_key, "window_length": L, "stride": S}
     run_name = f"{model_key}_L{L}_S{S}"
@@ -223,6 +339,7 @@ def run(model_key: str, param_grid: dict, base_cfg: dict, L: float, S: float):
         le = LabelEncoder()
         y_train_enc = le.fit_transform(y_train)
         y_test_enc  = le.transform(y_test)
+        class_names = le.classes_.tolist()
 
         # ── Grid search — dispatch by model type ──────────────────────────────
         probe = build_model({"model": model_key, "seed": cfg.seed})
@@ -260,7 +377,12 @@ def run(model_key: str, param_grid: dict, base_cfg: dict, L: float, S: float):
 
         # ── Evaluate ──────────────────────────────────────────────────────────
         y_pred   = best_estimator.predict(X_test)
+        y_proba  = best_estimator.predict_proba(X_test)
         accuracy = accuracy_score(y_test_enc, y_pred)
+
+        # ── Per-run plots ──────────────────────────────────────────────────────
+        _log_confusion_matrix(y_test_enc, y_pred, class_names, run_dir)
+        auc = _log_roc_curves(y_test_enc, y_proba, class_names, run_dir)
 
         # ── Latency & size ────────────────────────────────────────────────────
         latency_ms      = inference_latency_ms(best_estimator, X_test)
@@ -273,6 +395,7 @@ def run(model_key: str, param_grid: dict, base_cfg: dict, L: float, S: float):
             **{f"best_{k}": v for k, v in best_params.items()},
             # Primary benchmark metrics
             "accuracy":        accuracy,
+            "auc":             auc,
             "cv_best_score":   cv_best_score,
             "lead_time_s":     L,
             "latency_ms":      latency_ms,
@@ -290,10 +413,19 @@ def run(model_key: str, param_grid: dict, base_cfg: dict, L: float, S: float):
         # ── Console summary ───────────────────────────────────────────────────
         size_flag = "✓" if size_within_5mb else "✗ EXCEEDS 5 MB LIMIT"
         print(f"  Accuracy   : {accuracy:.4f}  (CV best: {cv_best_score:.4f})")
+        print(f"  AUC        : {auc:.4f}")
         print(f"  Lead time  : {L:.3f} s  (window = {L} s)")
         print(f"  Latency    : {latency_ms:.3f} ms / sample")
         print(f"  Model size : {size_mb:.3f} MB  {size_flag}")
         print(f"  Train time : {train_time_s:.1f} s")
+
+    return {
+        "model":          model_key,
+        "accuracy":       accuracy,
+        "auc":            auc,
+        "latency_ms":     latency_ms,
+        "model_size_mb":  size_mb,
+    }
 
 
 # ── CLI entry-point ───────────────────────────────────────────────────────────
@@ -309,6 +441,7 @@ if __name__ == "__main__":
     cfg      = load_config(args.config)
     base_cfg = {k: v for k, v in cfg.items() if k != "models"}
     combos   = list(iter_window_combos(cfg))
+    out_dir  = Path("outputs")
     n_runs   = len(combos) * len(cfg["models"])
 
     print(f"[train] Config       : {args.config}")
@@ -317,5 +450,8 @@ if __name__ == "__main__":
     print(f"[train] Total runs   : {n_runs}  ({len(combos)} window combos × {len(cfg['models'])} models)")
 
     for L, S in combos:
+        combo_results = []
         for model_key, model_cfg in cfg["models"].items():
-            run(model_key, model_cfg["param_grid"], base_cfg, L, S)
+            result = run(model_key, model_cfg["param_grid"], base_cfg, L, S)
+            combo_results.append(result)
+        compare_models(combo_results, L, S, out_dir)
