@@ -321,35 +321,29 @@ class TimeSeriesForestModel(BaseClassifier):
 # Input X is 2-D (N, F); we treat the F-length vector as a univariate time
 # series fed into Conv1d channels-first: (N, 1, F).
 
-class _LSTMCNNNet:
-    """Thin wrapper so the net is only built once fit() knows input shape."""
+class LSTMCNNPyTorchNet(nn.Module):
+    """Global module so Python can pickle it for the size check."""
+    def __init__(self, n_classes: int, hidden: int):
+        super().__init__()
+        self.cnn = nn.Sequential(
+            nn.Conv1d(1, 64, kernel_size=8, padding=4),
+            nn.BatchNorm1d(64),
+            nn.ReLU(),
+            nn.Conv1d(64, 64, kernel_size=5, padding=2),
+            nn.BatchNorm1d(64),
+            nn.ReLU(),
+        )
+        self.lstm = nn.LSTM(
+            input_size=64, hidden_size=hidden,
+            num_layers=2, batch_first=True, dropout=0.3,
+        )
+        self.fc = nn.Linear(hidden, n_classes)
 
-    def __init__(self, n_features: int, n_classes: int, hidden: int):
-
-        class _Net(nn.Module):
-            def __init__(self):
-                super().__init__()
-                self.cnn = nn.Sequential(
-                    nn.Conv1d(1, 64, kernel_size=8, padding=4),
-                    nn.BatchNorm1d(64),
-                    nn.ReLU(),
-                    nn.Conv1d(64, 64, kernel_size=5, padding=2),
-                    nn.BatchNorm1d(64),
-                    nn.ReLU(),
-                )
-                self.lstm = nn.LSTM(
-                    input_size=64, hidden_size=hidden,
-                    num_layers=2, batch_first=True, dropout=0.3,
-                )
-                self.fc = nn.Linear(hidden, n_classes)
-
-            def forward(self, x):          # x: (B, 1, F)
-                x = self.cnn(x)            # (B, 64, F')
-                x = x.permute(0, 2, 1)    # (B, F', 64) — seq-first for LSTM
-                _, (h, _) = self.lstm(x)  # h: (layers, B, hidden)
-                return self.fc(h[-1])      # (B, n_classes)
-
-        self.net = _Net()
+    def forward(self, x):          # x: (B, 1, F)
+        x = self.cnn(x)            # (B, 64, F')
+        x = x.permute(0, 2, 1)     # (B, F', 64) — seq-first for LSTM
+        _, (h, _) = self.lstm(x)   # h: (layers, B, hidden)
+        return self.fc(h[-1])      # (B, n_classes)
 
 
 @register_model("lstmcnn")
@@ -408,8 +402,7 @@ class LSTMCNNModel(BaseClassifier):
         n_features = X.shape[1]
         device     = self._device()
 
-        wrapper = _LSTMCNNNet(n_features, n_classes, self._hidden)
-        self._net = wrapper.net.to(device)
+        self._net = LSTMCNNPyTorchNet(n_classes, self._hidden).to(device)
 
         X_t = torch.tensor(X[:, np.newaxis, :], dtype=torch.float32)  # (N,1,F)
         y_t = torch.tensor(y.astype(np.int64))
@@ -439,10 +432,23 @@ class LSTMCNNModel(BaseClassifier):
     def _forward(self, X: np.ndarray):
         self._net.eval()
         device = self._device()
-        X_t = torch.tensor(X[:, np.newaxis, :], dtype=torch.float32).to(device)
+        
+        # Keep the full tensor on the CPU initially to save VRAM
+        X_t = torch.tensor(X[:, np.newaxis, :], dtype=torch.float32)
+        
+        logits_list = []
         with torch.no_grad():
-            logits = self._net(X_t)
-        return logits.cpu().numpy()
+            # Process the data in chunks
+            for i in range(0, len(X_t), self._batch_size):
+                # Move only the current batch to the GPU
+                xb = X_t[i : i + self._batch_size].to(device)
+                logits = self._net(xb)
+                
+                # Immediately move the output back to CPU and store it
+                logits_list.append(logits.cpu().numpy())
+                
+        # Combine all batches into a single array
+        return np.concatenate(logits_list, axis=0)
 
     def predict(self, X: np.ndarray) -> np.ndarray:
         return self._classes[self._forward(X).argmax(axis=1)]
