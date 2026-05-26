@@ -25,7 +25,7 @@ import abc
 from typing import Dict, Type
 
 import numpy as np
-from sklearn.ensemble import GradientBoostingClassifier
+from sklearn.ensemble import GradientBoostingClassifier, HistGradientBoostingClassifier
 from xgboost import XGBClassifier
 
 import torch
@@ -127,6 +127,34 @@ class GradientBoostingModel(BaseClassifier):
         seed   = cfg.seed         if hasattr(cfg, "seed")         else cfg.get("seed", 42)
         self._clf = GradientBoostingClassifier(
             n_estimators=n_est, max_depth=depth, random_state=seed
+        )
+
+    def fit(self, X, y):
+        self._clf.fit(X, y)
+        return self
+
+    def predict(self, X):
+        return self._clf.predict(X)
+
+    def predict_proba(self, X):
+        return self._clf.predict_proba(X)
+
+@register_model("hgb")
+class HistGradientBoostingModel(BaseClassifier):
+    """
+    Histogram-based Gradient Boosting — 10–50× faster than vanilla GB.
+    Supports early stopping and handles missing values natively.
+    CPU-only (sklearn); parallelism via GridSearchCV n_jobs=-1.
+    """
+    name = "Hist Gradient Boosting"
+
+    def __init__(self, cfg):
+        max_iter  = cfg.max_iter if hasattr(cfg, "max_iter") else cfg.get("max_iter", 300)
+        depth     = cfg.max_depth if hasattr(cfg, "max_depth") else cfg.get("max_depth", None)
+        seed      = cfg.seed         if hasattr(cfg, "seed")         else cfg.get("seed", 42)
+        self._clf = HistGradientBoostingClassifier(
+            max_iter=max_iter, max_depth=depth,
+            early_stopping=True, random_state=seed,
         )
 
     def fit(self, X, y):
