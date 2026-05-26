@@ -27,6 +27,9 @@ import pickle
 import random
 import sys
 import time
+import concurrent.futures
+import multiprocessing as mp
+from collections import defaultdict
 from itertools import product
 from pathlib import Path
 
@@ -216,11 +219,24 @@ def run(model_key: str, param_grid: dict, base_cfg: dict, L: float, S: float):
 
     return {
         "model":          model_key,
+        "L":              L,               # Added L
+        "S":              S,               # Added S
         "accuracy":       accuracy,
         "auc":            auc,
         "latency_ms":     latency_ms,
         "model_size_mb":  size_mb,
     }
+
+# ── Parallel Execution Helpers ────────────────────────────────────────────────
+
+def _init_gpu_worker(gpu_queue):
+    """Assigns an isolated GPU to the worker process upon initialization."""
+    gpu_id = gpu_queue.get()
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+
+def _run_gpu_task(kwargs):
+    """Wrapper mapping dictionary arguments back into the run function."""
+    return run(**kwargs)
 
 
 # ── CLI entry-point ───────────────────────────────────────────────────────────
@@ -232,6 +248,9 @@ def parse_args():
 
 
 if __name__ == "__main__":
+    # Crucial for CUDA in multiprocessing contexts to prevent context deadlocks
+    mp.set_start_method("spawn", force=True)
+
     args     = parse_args()
     cfg      = load_config(args.config)
     base_cfg = {k: v for k, v in cfg.items() if k != "models"}
@@ -244,9 +263,69 @@ if __name__ == "__main__":
     print(f"[train] (L, S) pairs : {combos}")
     print(f"[train] Total runs   : {n_runs}  ({len(combos)} window combos × {len(cfg['models'])} models)")
 
+    # Identify GPU vs CPU bound models dynamically
+    gpu_models_set = {"xgb", "lstmcnn"}
+    if _CUML:
+        gpu_models_set.update({"rf", "lr"})
+
+    gpu_tasks = []
+    cpu_tasks = []
+
     for L, S in combos:
-        combo_results = []
         for model_key, model_cfg in cfg["models"].items():
-            result = run(model_key, model_cfg["param_grid"], base_cfg, L, S)
-            combo_results.append(result)
-        compare_models(combo_results, L, S, out_dir)
+            task_kwargs = {
+                "model_key": model_key,
+                "param_grid": model_cfg["param_grid"],
+                "base_cfg": base_cfg,
+                "L": L,
+                "S": S
+            }
+            if model_key in gpu_models_set:
+                gpu_tasks.append(task_kwargs)
+            else:
+                cpu_tasks.append(task_kwargs)
+
+    combo_results = []
+
+    # 1. Parallelize GPU tasks across available hardware
+    try:
+        import torch
+        n_gpus = torch.cuda.device_count()
+    except ImportError:
+        n_gpus = 0
+
+    if n_gpus > 0 and gpu_tasks:
+        print(f"\n[Parallel] Distributing {len(gpu_tasks)} GPU-bound tasks across {n_gpus} GPUs...")
+        m = mp.Manager()
+        gpu_q = m.Queue()
+        for i in range(n_gpus):
+            gpu_q.put(i)
+
+        with concurrent.futures.ProcessPoolExecutor(
+            max_workers=n_gpus,
+            initializer=_init_gpu_worker,
+            initargs=(gpu_q,)
+        ) as exc:
+            gpu_results = list(exc.map(_run_gpu_task, gpu_tasks))
+        combo_results.extend(gpu_results)
+
+    elif gpu_tasks:
+        print("\n[Sequential] No GPUs detected. Running GPU-targeted tasks serially...")
+        for task in gpu_tasks:
+            combo_results.append(run(**task))
+
+    # 2. Sequential CPU Execution
+    # CPU models run serially so their internal n_jobs=-1 grid search can max out 
+    # the processor without OS scheduler thrashing.
+    if cpu_tasks:
+        print(f"\n[Sequential] Executing {len(cpu_tasks)} CPU-bound tasks (maxing CPU via inner n_jobs=-1)...")
+        for task in cpu_tasks:
+            combo_results.append(run(**task))
+
+    # 3. Regroup results and dispatch to plotting
+    grouped_results = defaultdict(list)
+    for res in combo_results:
+        grouped_results[(res["L"], res["S"])].append(res)
+
+    for (L, S), results in grouped_results.items():
+        compare_models(results, L, S, out_dir)
