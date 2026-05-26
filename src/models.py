@@ -25,6 +25,7 @@ import abc
 from typing import Dict, Type
 
 import numpy as np
+import os
 from sklearn.ensemble import GradientBoostingClassifier, HistGradientBoostingClassifier
 from xgboost import XGBClassifier
 
@@ -240,7 +241,11 @@ class RocketModel(BaseClassifier):
             cfg.num_kernels if hasattr(cfg, "num_kernels") else cfg.get("num_kernels", 10_000)
         )
         seed   = cfg.seed         if hasattr(cfg, "seed")         else cfg.get("seed", 42)
-        self._clf = RocketClassifier(num_kernels=n_kernels, random_state=seed, n_jobs=-1)
+        
+        # Safely resolve n_jobs for Numba (cap at 72 to avoid ValueError)
+        n_jobs = min(os.cpu_count() or 1, 72)
+        
+        self._clf = RocketClassifier(num_kernels=n_kernels, random_state=seed, n_jobs=n_jobs)
 
     def fit(self, X, y):
         self._clf.fit(_to_3d(X), y)
@@ -259,12 +264,16 @@ class MiniRocketModel(BaseClassifier):
     _needs_3d = True
 
     def __init__(self, cfg):
-        from sktime.classification.kernel_based import MiniRocketClassifier
+        from sktime.classification.kernel_based import RocketClassifier
         n_kernels = (
             cfg.num_kernels if hasattr(cfg, "num_kernels") else cfg.get("num_kernels", 10_000)
         )
         seed   = cfg.seed         if hasattr(cfg, "seed")         else cfg.get("seed", 42)
-        self._clf = MiniRocketClassifier(num_kernels=n_kernels, random_state=seed, n_jobs=-1)
+        
+        # Safely resolve n_jobs for Numba (cap at 72 to avoid ValueError)
+        n_jobs = min(os.cpu_count() or 1, 72)
+        
+        self._clf = RocketClassifier(num_kernels=n_kernels, random_state=seed, n_jobs=n_jobs, rocket_transform="minirocket")
 
     def fit(self, X, y):
         self._clf.fit(_to_3d(X), y)
