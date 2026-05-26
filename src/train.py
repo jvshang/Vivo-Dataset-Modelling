@@ -103,6 +103,52 @@ def inference_latency_ms(model, X: np.ndarray, n_repeats: int = 200) -> float:
 
 # ── Core experiment ───────────────────────────────────────────────────────────
 
+def get_cached_dataset(task: int, L: float, S: float, split: str = "hard", cache_dir: str = ".data_cache"):
+    """Loads (X_train, y_train, X_test, y_test, ...) from disk, generating it if necessary."""
+    out_dir = Path(cache_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    if task == 1:
+        cache_file = out_dir / f"task1_{split}_L{L}_S{S}.npz"
+        if cache_file.exists():
+            print(f" [Data] Loading cached dataset: {cache_file.name}")
+            data = np.load(cache_file, allow_pickle=True)
+            return (
+                data["X_train"], data["y_train"],
+                data["X_test"], data["y_test"],
+                data["train_subjects"].tolist(),
+                data["test_subjects"].tolist()
+            )
+        else:
+            print(f" [Data] Cache miss. Generating Task 1 data for L={L}, S={S}...")
+            X_tr, y_tr, X_te, y_te, tr_sbj, te_sbj = task1_split(split=split, L=L, S=S)
+            np.savez_compressed(
+                cache_file,
+                X_train=X_tr, y_train=y_tr,
+                X_test=X_te, y_test=y_te,
+                train_subjects=np.array(tr_sbj),
+                test_subjects=np.array(te_sbj)
+            )
+            return X_tr, y_tr, X_te, y_te, tr_sbj, te_sbj
+
+    elif task == 2:
+        cache_file = out_dir / f"task2_L{L}_S{S}.npz"
+        if cache_file.exists():
+            print(f" [Data] Loading cached dataset: {cache_file.name}")
+            data = np.load(cache_file, allow_pickle=True)
+            return data["X_train"], data["y_train"], data["X_test"], data["y_test"]
+        else:
+            print(f" [Data] Cache miss. Generating Task 2 data for L={L}, S={S}...")
+            X_tr, y_tr, X_te, y_te = task2_split(L=L, S=S)
+            np.savez_compressed(
+                cache_file,
+                X_train=X_tr, y_train=y_tr,
+                X_test=X_te, y_test=y_te
+            )
+            return X_tr, y_tr, X_te, y_te
+    else:
+        raise ValueError(f"Unknown task {task}")
+
 def run(model_key: str, param_grid: dict, base_cfg: dict, L: float, S: float):
     """
     Run grid search for one model + (L, S) combo and log all metrics to wandb.
@@ -121,12 +167,14 @@ def run(model_key: str, param_grid: dict, base_cfg: dict, L: float, S: float):
         print(f"\n[wandb run: {wrun.name}]  task={cfg.task}  L={L}s  model={model_key}")
 
         # ── Load benchmark split ──────────────────────────────────────────────
+        split_name = cfg.get("split", "hard") # Default to hard if not specified
+        
         if cfg.task == 1:
-            X_train, y_train, X_test, y_test, train_sbj, test_sbj = task1_split(L=L, S=S)
+            X_train, y_train, X_test, y_test, train_sbj, test_sbj = get_cached_dataset(1, L, S, split=split_name)
             wandb.config.update({"train_subjects": train_sbj, "test_subjects": test_sbj},
                                 allow_val_change=True)
         elif cfg.task == 2:
-            X_train, y_train, X_test, y_test = task2_split(L=L, S=S)
+            X_train, y_train, X_test, y_test = get_cached_dataset(2, L, S)
         else:
             raise ValueError(f"task must be 1 or 2, got {cfg.task}")
 
@@ -262,6 +310,15 @@ if __name__ == "__main__":
     print(f"[train] Models       : {list(cfg['models'].keys())}")
     print(f"[train] (L, S) pairs : {combos}")
     print(f"[train] Total runs   : {n_runs}  ({len(combos)} window combos × {len(cfg['models'])} models)")
+
+    print("\n[Pre-computation] Checking dataset caches to prevent parallel file collisions...")
+    task_id = cfg.get("task", 1)
+    split_name = cfg.get("split", "hard")
+    for L, S in combos:
+        # Calling this sequentially guarantees the files are safely written to disk once.
+        # Later, parallel workers will just read the generated .npz files instantly.
+        get_cached_dataset(task_id, L, S, split_name)
+    print("[Pre-computation] Dataset caching complete.\n")
 
     # Identify GPU vs CPU bound models dynamically
     gpu_models_set = {"xgb", "lstmcnn"}
