@@ -2,7 +2,7 @@
 #SBATCH --job-name=task1
 #SBATCH --output=task1.out
 #SBATCH --nodes=1
-#SBATCH --gpus=1
+#SBATCH --gpus=2
 #SBATCH --time=5:00:00
 
 source $HOME/miniforge3/etc/profile.d/conda.sh
