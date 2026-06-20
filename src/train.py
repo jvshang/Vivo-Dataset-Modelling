@@ -184,6 +184,14 @@ def run(model_key: str, param_grid: dict, base_cfg: dict, L: float, S: float):
         y_test_enc  = le.transform(y_test)
         class_names = le.classes_.tolist()
 
+        # ── Undersampling ─────────────────────────────────────────────────────
+        if cfg.get("undersample", False):
+            print("  [Data] Applying random undersampling to training set...")
+            from imblearn.under_sampling import RandomUnderSampler
+            rus = RandomUnderSampler(random_state=cfg.seed)
+            X_train, y_train_enc = rus.fit_resample(X_train, y_train_enc)
+            print(f"  [Data] Resampled training set shape: {X_train.shape}")
+
         # ── Grid search — dispatch by model type ──────────────────────────────
         probe = build_model({"model": model_key, "seed": cfg.seed})
         param_grid = _normalize_grid(param_grid)
