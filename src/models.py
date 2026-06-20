@@ -102,6 +102,8 @@ class RandomForestModel(BaseClassifier):
         depth  = cfg.max_depth    if hasattr(cfg, "max_depth")    else cfg.get("max_depth", 10)
         seed   = cfg.seed         if hasattr(cfg, "seed")         else cfg.get("seed", 42)
         kwargs = dict(n_estimators=n_est, max_depth=depth, random_state=seed)
+        if cfg.get("use_class_weights", False):
+            kwargs["class_weight"] = "balanced"
         print(f"Loading Random Forest with {_DEVICE}")
         if not _CUML:
             kwargs["n_jobs"] = -1
@@ -153,10 +155,10 @@ class HistGradientBoostingModel(BaseClassifier):
         max_iter  = cfg.max_iter if hasattr(cfg, "max_iter") else cfg.get("max_iter", 300)
         depth     = cfg.max_depth if hasattr(cfg, "max_depth") else cfg.get("max_depth", None)
         seed      = cfg.seed         if hasattr(cfg, "seed")         else cfg.get("seed", 42)
-        self._clf = HistGradientBoostingClassifier(
-            max_iter=max_iter, max_depth=depth,
-            early_stopping=True, random_state=seed,
-        )
+        kwargs = dict(max_iter=max_iter, max_depth=depth, early_stopping=True, random_state=seed)
+        if cfg.get("use_class_weights", False):
+            kwargs["class_weight"] = "balanced"
+        self._clf = HistGradientBoostingClassifier(**kwargs)
 
     def fit(self, X, y):
         self._clf.fit(X, y)
@@ -204,6 +206,8 @@ class LogisticRegressionModel(BaseClassifier):
         max_iter = cfg.max_iter if hasattr(cfg, "max_iter") else cfg.get("max_iter", 500)
         seed     = cfg.seed     if hasattr(cfg, "seed")     else cfg.get("seed", 42)
         kwargs   = dict(C=C, max_iter=max_iter)
+        if cfg.get("use_class_weights", False):
+            kwargs["class_weight"] = "balanced"
         print(f"Loading Logistic Regression with {_DEVICE}")
         if not _CUML:
             kwargs["n_jobs"] = -1
@@ -356,6 +360,7 @@ class LSTMCNNModel(BaseClassifier):
         self._epochs     = cfg.epochs       if hasattr(cfg, "epochs")       else cfg.get("epochs",       30)
         self._batch_size = cfg.batch_size   if hasattr(cfg, "batch_size")   else cfg.get("batch_size",   256)
         self._seed       = cfg.seed         if hasattr(cfg, "seed")         else cfg.get("seed",         None)
+        self._use_class_weights = cfg.get("use_class_weights", False)
         self._net        = None
         self._classes    = None
 
@@ -419,7 +424,14 @@ class LSTMCNNModel(BaseClassifier):
         )
 
         optimiser = torch.optim.Adam(self._net.parameters(), lr=1e-3)
-        criterion = nn.CrossEntropyLoss()
+        if self._use_class_weights:
+            from sklearn.utils.class_weight import compute_class_weight
+            weights = compute_class_weight("balanced", classes=self._classes, y=y)
+            class_weights = torch.tensor(weights, dtype=torch.float32).to(device)
+            criterion = nn.CrossEntropyLoss(weight=class_weights)
+        else:
+            criterion = nn.CrossEntropyLoss()
+        
         self._net.train()
         for _ in range(self._epochs):
             for xb, yb in loader:
