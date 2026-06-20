@@ -1,0 +1,55 @@
+# ── Experiment settings ───────────────────────────────────────────────────────
+seed:              42      # global random seed for numpy, Python, and all models
+task:              2       # 1 = generalisation across participants, 2 = exo challenge
+window_length:     0.1     # L in seconds — directly determines lead time
+stride:            0.05    # S in seconds (50% overlap)
+unknown_handling:  drop    # "drop" | "backfill"
+undersample:       false   # whether to apply random undersampling to the training data
+use_class_weights: true    # whether to use class weights for models that support it
+cv_folds:          5       # number of cross-validation folds for grid search
+
+# ── Per-model hyperparameter grids ────────────────────────────────────────────
+# Each key must match a registered model key (rf | gb | xgb | lr).
+# param_grid keys must match the underlying sklearn/cuML estimator's __init__ params.
+models:
+  rf:
+    param_grid:
+      n_estimators: [50, 100, 200]
+      max_depth:    [5, 10, 20]
+
+  xgb:
+    param_grid:
+      n_estimators: [50, 100, 200]
+      max_depth:    [3, 6, 10]
+
+  # gb:
+  #   param_grid:
+  #     n_estimators: [50, 100]
+  #     max_depth:    [5, 10]
+
+  hgb:
+    param_grid:
+      max_iter:  [200, 400]
+      max_depth: [10, 20]
+  lr:
+    param_grid:
+      C:        [0.01, 0.1, 1.0, 10.0]
+      max_iter: [500]
+
+  lstmcnn:
+    param_grid:
+      lstm_hidden: [64, 128]
+      epochs:      [10, 20]
+      batch_size:  [128, 256]
+  
+  rocket:
+    param_grid:
+      num_kernels: [1000,5000]
+
+  minirocket:
+    param_grid:
+      num_kernels: [1000,5000]
+
+  tsf:
+    param_grid:
+      n_estimators: [10,50]
