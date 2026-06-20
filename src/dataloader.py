@@ -197,12 +197,16 @@ def sliding_windows(
         raise ValueError(f"unknown_handling must be 'drop' or 'backfill', got {unknown_handling!r}")
 
     X_list, y_list = [], []
-    for start in range(0, len(data) - window_size + 1, stride):
+    # Need enough data for the feature window AND the next label window
+    for start in range(0, len(data) - 2 * window_size + 1, stride):
         end            = start + window_size
-        window_labels  = pd.Series(labels[start:end])
+        label_start    = end
+        label_end      = end + window_size
+        
+        window_labels  = pd.Series(labels[label_start:label_end])
         valid_only     = window_labels[window_labels.isin(VALID_ACTIVITIES)]
         if valid_only.empty:
-            continue  # no valid label in this window → discard
+            continue  # no valid label in this next window → discard
         majority_label = valid_only.mode().iloc[0]
         X_list.append(data[start:end])
         y_list.append(majority_label)
