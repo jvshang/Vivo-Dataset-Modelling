@@ -232,10 +232,16 @@ def run(model_key: str, param_grid: dict, base_cfg: dict, L: float, S: float):
         accuracy = accuracy_score(y_test_enc, y_pred)
 
         # ── Per-run plots ──────────────────────────────────────────────────────
-        _log_confusion_matrix(y_test_enc, y_pred, class_names, run_dir)
-        auc = _log_roc_curves(y_test_enc, y_proba, class_names, run_dir)
+        undersample_flag = cfg.get("undersample", False)
+        class_weights_flag = cfg.get("use_class_weights", False)
+        figures_dir = Path("figures") / f"Task_{cfg.task}" / f"undersampling_{undersample_flag}_class_weights_{class_weights_flag}"
+        model_figures_dir = figures_dir / run_name
+        model_figures_dir.mkdir(parents=True, exist_ok=True)
+
+        _log_confusion_matrix(y_test_enc, y_pred, class_names, model_figures_dir)
+        auc = _log_roc_curves(y_test_enc, y_proba, class_names, model_figures_dir)
         _log_imbalance_and_performance(
-            y_train_enc, y_test_enc, y_pred, class_names, run_dir
+            y_train_enc, y_test_enc, y_pred, class_names, model_figures_dir
         )
 
         # ── Latency & size ────────────────────────────────────────────────────
@@ -392,5 +398,11 @@ if __name__ == "__main__":
     for res in combo_results:
         grouped_results[(res["L"], res["S"])].append(res)
 
+    task_id = cfg.get("task", 1)
+    undersample_flag = cfg.get("undersample", False)
+    class_weights_flag = cfg.get("use_class_weights", False)
+    figures_dir = Path("figures") / f"Task_{task_id}" / f"undersampling_{undersample_flag}_class_weights_{class_weights_flag}"
+    figures_dir.mkdir(parents=True, exist_ok=True)
+
     for (L, S), results in grouped_results.items():
-        compare_models(results, L, S, out_dir)
+        compare_models(results, L, S, figures_dir, wandb_dir=out_dir)

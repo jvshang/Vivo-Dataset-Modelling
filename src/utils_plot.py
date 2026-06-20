@@ -211,7 +211,7 @@ def _log_imbalance_and_performance(
 
 # ── Comparative plots ─────────────────────────────────────────────────────────
 
-def compare_models(results: list[dict], L: float, S: float, out_dir: Path) -> None:
+def compare_models(results: list[dict], L: float, S: float, out_dir: Path, wandb_dir: Path = Path("outputs")) -> None:
     """
     Save comparative bar charts for all models evaluated at the same (L, S).
 
@@ -244,7 +244,7 @@ def compare_models(results: list[dict], L: float, S: float, out_dir: Path) -> No
     plt.close(fig)
     print(f"[compare] Saved {path}")
 
-    run_dir = out_dir / f"comparison_L{L}_S{S}"
+    run_dir = wandb_dir / f"comparison_L{L}_S{S}"
     run_dir.mkdir(parents=True, exist_ok=True)
     with wandb.init(
         name=f"comparison_L{L}_S{S}",
