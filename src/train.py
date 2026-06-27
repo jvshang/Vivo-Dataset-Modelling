@@ -238,10 +238,12 @@ def run(model_key: str, param_grid: dict, base_cfg: dict, L: float, S: float):
         model_figures_dir = figures_dir / run_name
         model_figures_dir.mkdir(parents=True, exist_ok=True)
 
-        _log_confusion_matrix(y_test_enc, y_pred, class_names, model_figures_dir)
-        auc = _log_roc_curves(y_test_enc, y_proba, class_names, model_figures_dir)
+        prefix = f"Task{cfg.task}_US{undersample_flag}_CW{class_weights_flag}_{model_key}_L{L}_S{S}_"
+
+        _log_confusion_matrix(y_test_enc, y_pred, class_names, model_figures_dir, prefix=prefix)
+        auc = _log_roc_curves(y_test_enc, y_proba, class_names, model_figures_dir, prefix=prefix)
         _log_imbalance_and_performance(
-            y_train_enc, y_test_enc, y_pred, class_names, model_figures_dir
+            y_train_enc, y_test_enc, y_pred, class_names, model_figures_dir, prefix=prefix
         )
 
         # ── Latency & size ────────────────────────────────────────────────────
@@ -405,4 +407,5 @@ if __name__ == "__main__":
     figures_dir.mkdir(parents=True, exist_ok=True)
 
     for (L, S), results in grouped_results.items():
-        compare_models(results, L, S, figures_dir, wandb_dir=out_dir)
+        prefix = f"Task{task_id}_US{undersample_flag}_CW{class_weights_flag}_L{L}_S{S}_"
+        compare_models(results, L, S, figures_dir, wandb_dir=out_dir, prefix=prefix)

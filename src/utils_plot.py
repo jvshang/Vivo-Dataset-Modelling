@@ -3,6 +3,7 @@ import matplotlib.ticker as mticker
 import numpy as np
 from pathlib import Path
 import wandb
+import json
 from sklearn.preprocessing import LabelBinarizer
 from sklearn.metrics import (
     ConfusionMatrixDisplay,
@@ -19,17 +20,20 @@ def _log_confusion_matrix(
     y_pred: np.ndarray,
     class_names: list[str],
     out_dir: Path,
+    prefix: str = "",
 ) -> None:
-    """Log a labelled confusion matrix to the active wandb run and save as PNG."""
+    """Log a labelled confusion matrix to the active wandb run and save as PNG/NPZ."""
+    np.savez_compressed(out_dir / f"{prefix}data_confusion.npz", y_true=y_true, y_pred=y_pred, class_names=class_names)
+    
     fig, ax = plt.subplots(figsize=(6, 5))
     ConfusionMatrixDisplay(
         confusion_matrix(y_true, y_pred),
         display_labels=class_names,
     ).plot(ax=ax, colorbar=False, xticks_rotation=45)
-    ax.set_title("Confusion Matrix")
     fig.tight_layout()
-    fig.savefig(out_dir / "confusion_matrix.png", dpi=150)
-    wandb.log({"confusion_matrix": wandb.Image(fig)})
+    fig.savefig(out_dir / f"{prefix}confusion_matrix.png", dpi=150)
+    if wandb.run is not None:
+        wandb.log({"confusion_matrix": wandb.Image(fig)})
     plt.close(fig)
 
 
@@ -38,11 +42,14 @@ def _log_roc_curves(
     y_proba: np.ndarray,
     class_names: list[str],
     out_dir: Path,
+    prefix: str = "",
 ) -> float:
     """
     Log per-class ROC curves and return macro-average AUC.
     Uses one-vs-rest binarisation for multiclass problems.
     """
+    np.savez_compressed(out_dir / f"{prefix}data_roc.npz", y_true=y_true, y_proba=y_proba, class_names=class_names)
+    
     lb      = LabelBinarizer().fit(y_true)
     y_bin   = lb.transform(y_true)
     n_cls   = len(class_names)
@@ -60,11 +67,11 @@ def _log_roc_curves(
     ax.plot([0, 1], [0, 1], "k--", linewidth=0.8)
     ax.set_xlabel("False Positive Rate")
     ax.set_ylabel("True Positive Rate")
-    ax.set_title("ROC Curves (one-vs-rest)")
     ax.legend(fontsize=8)
     fig.tight_layout()
-    fig.savefig(out_dir / "roc_curves.png", dpi=150)
-    wandb.log({"roc_curves": wandb.Image(fig)})
+    fig.savefig(out_dir / f"{prefix}roc_curves.png", dpi=150)
+    if wandb.run is not None:
+        wandb.log({"roc_curves": wandb.Image(fig)})
     plt.close(fig)
 
     return float(np.mean(aucs))
@@ -76,6 +83,7 @@ def _log_imbalance_and_performance(
     y_pred: np.ndarray,
     class_names: list[str],
     out_dir: Path,
+    prefix: str = "",
 ) -> None:
     """
     Two-panel figure that links class imbalance to per-class performance.
@@ -87,8 +95,10 @@ def _log_imbalance_and_performance(
                    reader can immediately see whether minority classes are the
                    ones suffering on all three metrics.
 
-    Saved to out_dir/imbalance_performance.png and logged to the active wandb run.
+    Saved to out_dir/{prefix}imbalance_performance.png and logged to the active wandb run.
     """
+    np.savez_compressed(out_dir / f"{prefix}data_imbalance.npz", y_train=y_train, y_test=y_test, y_pred=y_pred, class_names=class_names)
+    
     report = classification_report(
         y_test, y_pred,
         labels=list(range(len(class_names))),
@@ -115,7 +125,6 @@ def _log_imbalance_and_performance(
         figsize=(max(8, n_cls * 1.2), 9),
         gridspec_kw={"height_ratios": [1, 1], "hspace": 0.45},
     )
-    fig.suptitle("Class Imbalance  ×  Per-class Performance", fontsize=13, fontweight="bold")
 
     # ── Top: class distribution ───────────────────────────────────────────────
     bars_train = ax_top.bar(
@@ -130,7 +139,6 @@ def _log_imbalance_and_performance(
     ax_top.set_xticks(x)
     ax_top.set_xticklabels(class_names, rotation=35, ha="right", fontsize=8)
     ax_top.set_ylabel("Sample count")
-    ax_top.set_title("Class distribution (train fill · test outline)")
     ax_top.yaxis.set_major_locator(mticker.MaxNLocator(integer=True))
     ax_top.legend(fontsize=8, loc="upper right")
 
@@ -175,7 +183,6 @@ def _log_imbalance_and_performance(
     ax_bot.set_xticklabels(class_names, rotation=35, ha="right", fontsize=8)
     ax_bot.set_ylabel("Score")
     ax_bot.set_ylim(0, 1.15)
-    ax_bot.set_title("Per-class Precision / Recall / F1  (dashed = train imbalance ratio)")
     ax_bot.yaxis.set_major_formatter(mticker.FormatStrFormatter("%.2f"))
 
     # Merge legends from both axes
@@ -184,13 +191,15 @@ def _log_imbalance_and_performance(
     ax_bot.legend(h1 + h2, l1 + l2, fontsize=8, loc="lower right")
 
     fig.tight_layout()
-    path = out_dir / "imbalance_performance.png"
+    path = out_dir / f"{prefix}imbalance_performance.png"
     fig.savefig(path, dpi=150)
-    wandb.log({"imbalance_performance": wandb.Image(fig)})
+    if wandb.run is not None:
+        wandb.log({"imbalance_performance": wandb.Image(fig)})
     plt.close(fig)
 
     # Also log per-class metrics as a wandb Table for filtering in the UI
-    table = wandb.Table(
+    if wandb.run is not None:
+        table = wandb.Table(
         columns=["class", "train_count", "test_count", "imbalance_ratio",
                  "precision", "recall", "f1"],
         data=[
@@ -204,31 +213,31 @@ def _log_imbalance_and_performance(
                 round(float(f1[i]), 4),
             ]
             for i in range(n_cls)
-        ],
-    )
-    wandb.log({"per_class_metrics": table})
+        ])
+        wandb.log({"per_class_metrics": table})
 
 
 # ── Comparative plots ─────────────────────────────────────────────────────────
 
-def compare_models(results: list[dict], L: float, S: float, out_dir: Path, wandb_dir: Path = Path("outputs")) -> None:
+def compare_models(results: list[dict], L: float, S: float, out_dir: Path, wandb_dir: Path = Path("outputs"), prefix: str = "") -> None:
     """
     Save comparative bar charts for all models evaluated at the same (L, S).
 
     Plots: accuracy, AUC, latency (ms), model size (MB).
-    Saved to out_dir/comparison_L{L}_S{S}.png and also logged to a dedicated
+    Saved to out_dir/{prefix}comparison.png and also logged to a dedicated
     wandb run so they appear alongside the per-model runs.
     """
+    with open(out_dir / f"{prefix}data_compare.json", "w") as f:
+        json.dump(results, f, indent=2)
+
     metrics  = ["accuracy", "auc", "latency_ms", "model_size_mb"]
     titles   = ["Accuracy", "Macro AUC", "Latency (ms)", "Model size (MB)"]
     models   = [r["model"] for r in results]
     fig, axes = plt.subplots(1, len(metrics), figsize=(5 * len(metrics), 4))
-    fig.suptitle(f"Model comparison  —  L={L}s  S={S}s", fontsize=13)
 
     for ax, metric, title in zip(axes, metrics, titles):
         values = [r[metric] for r in results]
         bars   = ax.bar(models, values)
-        ax.set_title(title)
         ax.set_ylim(0, max(values) * 1.2)
         ax.tick_params(axis="x", rotation=30)
         for bar, val in zip(bars, values):
@@ -239,10 +248,13 @@ def compare_models(results: list[dict], L: float, S: float, out_dir: Path, wandb
             )
 
     fig.tight_layout()
-    path = out_dir / f"comparison_L{L}_S{S}.png"
+    path = out_dir / f"{prefix}comparison.png"
     fig.savefig(path, dpi=150)
     plt.close(fig)
     print(f"[compare] Saved {path}")
+
+    if wandb.run is None:
+        return
 
     run_dir = wandb_dir / f"comparison_L{L}_S{S}"
     run_dir.mkdir(parents=True, exist_ok=True)
