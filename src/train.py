@@ -193,7 +193,7 @@ def run(model_key: str, param_grid: dict, base_cfg: dict, L: float, S: float):
             print(f"  [Data] Resampled training set shape: {X_train.shape}")
 
         # ── Grid search — dispatch by model type ──────────────────────────────
-        probe = build_model({"model": model_key, "seed": cfg.seed})
+        probe = build_model(dict(cfg))
         param_grid = _normalize_grid(param_grid)
 
         t_train_start = time.perf_counter()
