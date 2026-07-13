@@ -104,10 +104,15 @@ class RandomForestModel(BaseClassifier):
         kwargs = dict(n_estimators=n_est, max_depth=depth, random_state=seed)
         if cfg.get("use_class_weights", False):
             kwargs["class_weight"] = "balanced"
-        print(f"Loading Random Forest with {_DEVICE}")
-        if not _CUML:
             kwargs["n_jobs"] = -1
-        self._clf = RandomForestClassifier(**kwargs)
+            print(f"Loading Random Forest with CPU (sklearn) because class_weights is not supported by cuML")
+            from sklearn.ensemble import RandomForestClassifier as SKRandomForestClassifier
+            self._clf = SKRandomForestClassifier(**kwargs)
+        else:
+            print(f"Loading Random Forest with {_DEVICE}")
+            if not _CUML:
+                kwargs["n_jobs"] = -1
+            self._clf = RandomForestClassifier(**kwargs)
 
     def fit(self, X, y):
         self._clf.fit(X, y)
@@ -208,11 +213,17 @@ class LogisticRegressionModel(BaseClassifier):
         kwargs   = dict(C=C, max_iter=max_iter)
         if cfg.get("use_class_weights", False):
             kwargs["class_weight"] = "balanced"
-        print(f"Loading Logistic Regression with {_DEVICE}")
-        if not _CUML:
             kwargs["n_jobs"] = -1
             kwargs["random_state"] = seed
-        self._clf = LogisticRegression(**kwargs)
+            print(f"Loading Logistic Regression with CPU (sklearn) because class_weights is not supported by cuML")
+            from sklearn.linear_model import LogisticRegression as SKLogisticRegression
+            self._clf = SKLogisticRegression(**kwargs)
+        else:
+            print(f"Loading Logistic Regression with {_DEVICE}")
+            if not _CUML:
+                kwargs["n_jobs"] = -1
+                kwargs["random_state"] = seed
+            self._clf = LogisticRegression(**kwargs)
 
     def fit(self, X, y):
         self._clf.fit(X, y)
