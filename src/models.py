@@ -7,7 +7,7 @@ Adding a new model
 2. Register it with @register_model("your_key").
 3. Add its hyperparameters to DEFAULT_CONFIG in train.py if needed.
 
-Available keys: rf | gb | lr | rocket | minirocket | tsf | lstmcnn
+Available keys: rf | gb | lr | xgb | rocket | minirocket | tsf | lstmcnn
 
 sktime models (rocket, minirocket)
 -----------------------------------
@@ -25,8 +25,23 @@ import abc
 from typing import Dict, Type
 
 import numpy as np
-from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
-from sklearn.linear_model import LogisticRegression
+import os
+from sklearn.ensemble import GradientBoostingClassifier, HistGradientBoostingClassifier
+from xgboost import XGBClassifier
+
+import torch
+import torch.nn as nn
+
+try:
+    from cuml.ensemble import RandomForestClassifier
+    from cuml.linear_model import LogisticRegression
+    _CUML = True
+except ImportError:
+    from sklearn.ensemble import RandomForestClassifier
+    from sklearn.linear_model import LogisticRegression
+    _CUML = False
+
+_DEVICE = "GPU (cuML)" if _CUML else "CPU (sklearn)"
 
 
 # ── Base class ────────────────────────────────────────────────────────────────
@@ -34,7 +49,9 @@ from sklearn.linear_model import LogisticRegression
 class BaseClassifier(abc.ABC):
     """Common interface for all activity classifiers."""
 
-    name: str  # human-readable name shown in logs / wandb
+    name: str        # human-readable name shown in logs / wandb
+    _needs_3d: bool = False  # True for sktime classifiers that expect (N, C, T) input
+    _is_torch: bool = False  # True for PyTorch models that need a custom CV loop
 
     @abc.abstractmethod
     def fit(self, X: np.ndarray, y: np.ndarray) -> "BaseClassifier":
@@ -83,9 +100,19 @@ class RandomForestModel(BaseClassifier):
     def __init__(self, cfg):
         n_est  = cfg.n_estimators if hasattr(cfg, "n_estimators") else cfg.get("n_estimators", 50)
         depth  = cfg.max_depth    if hasattr(cfg, "max_depth")    else cfg.get("max_depth", 10)
-        self._clf = RandomForestClassifier(
-            n_estimators=n_est, max_depth=depth, random_state=42, n_jobs=-1
-        )
+        seed   = cfg.seed         if hasattr(cfg, "seed")         else cfg.get("seed", 42)
+        kwargs = dict(n_estimators=n_est, max_depth=depth, random_state=seed)
+        if cfg.get("use_class_weights", False):
+            kwargs["class_weight"] = "balanced"
+            kwargs["n_jobs"] = -1
+            print(f"Loading Random Forest with CPU (sklearn) because class_weights is not supported by cuML")
+            from sklearn.ensemble import RandomForestClassifier as SKRandomForestClassifier
+            self._clf = SKRandomForestClassifier(**kwargs)
+        else:
+            print(f"Loading Random Forest with {_DEVICE}")
+            if not _CUML:
+                kwargs["n_jobs"] = -1
+            self._clf = RandomForestClassifier(**kwargs)
 
     def fit(self, X, y):
         self._clf.fit(X, y)
@@ -105,8 +132,63 @@ class GradientBoostingModel(BaseClassifier):
     def __init__(self, cfg):
         n_est  = cfg.n_estimators if hasattr(cfg, "n_estimators") else cfg.get("n_estimators", 50)
         depth  = cfg.max_depth    if hasattr(cfg, "max_depth")    else cfg.get("max_depth", 10)
+        seed   = cfg.seed         if hasattr(cfg, "seed")         else cfg.get("seed", 42)
         self._clf = GradientBoostingClassifier(
-            n_estimators=n_est, max_depth=depth, random_state=42
+            n_estimators=n_est, max_depth=depth, random_state=seed
+        )
+
+    def fit(self, X, y):
+        self._clf.fit(X, y)
+        return self
+
+    def predict(self, X):
+        return self._clf.predict(X)
+
+    def predict_proba(self, X):
+        return self._clf.predict_proba(X)
+
+@register_model("hgb")
+class HistGradientBoostingModel(BaseClassifier):
+    """
+    Histogram-based Gradient Boosting — 10–50× faster than vanilla GB.
+    Supports early stopping and handles missing values natively.
+    CPU-only (sklearn); parallelism via GridSearchCV n_jobs=-1.
+    """
+    name = "Hist Gradient Boosting"
+
+    def __init__(self, cfg):
+        max_iter  = cfg.max_iter if hasattr(cfg, "max_iter") else cfg.get("max_iter", 300)
+        depth     = cfg.max_depth if hasattr(cfg, "max_depth") else cfg.get("max_depth", None)
+        seed      = cfg.seed         if hasattr(cfg, "seed")         else cfg.get("seed", 42)
+        kwargs = dict(max_iter=max_iter, max_depth=depth, early_stopping=True, random_state=seed)
+        if cfg.get("use_class_weights", False):
+            kwargs["class_weight"] = "balanced"
+        self._clf = HistGradientBoostingClassifier(**kwargs)
+
+    def fit(self, X, y):
+        self._clf.fit(X, y)
+        return self
+
+    def predict(self, X):
+        return self._clf.predict(X)
+
+    def predict_proba(self, X):
+        return self._clf.predict_proba(X)
+
+
+@register_model("xgb")
+class XGBoostModel(BaseClassifier):
+    name = "XGBoost"
+
+    def __init__(self, cfg):
+        n_est  = cfg.n_estimators if hasattr(cfg, "n_estimators") else cfg.get("n_estimators", 50)
+        depth  = cfg.max_depth    if hasattr(cfg, "max_depth")    else cfg.get("max_depth", 10)
+        seed   = cfg.seed         if hasattr(cfg, "seed")         else cfg.get("seed", 42)
+        print(f"Loading XGBoost with {_DEVICE}")
+        self._clf = XGBClassifier(
+            n_estimators=n_est, max_depth=depth, random_state=seed,
+            device="cuda" if _CUML else "cpu",
+            eval_metric="mlogloss", verbosity=0,
         )
 
     def fit(self, X, y):
@@ -125,11 +207,23 @@ class LogisticRegressionModel(BaseClassifier):
     name = "Logistic Regression"
 
     def __init__(self, cfg):
-        C        = cfg.lr_C        if hasattr(cfg, "lr_C")        else cfg.get("lr_C", 1.0)
-        max_iter = cfg.lr_max_iter if hasattr(cfg, "lr_max_iter") else cfg.get("lr_max_iter", 500)
-        self._clf = LogisticRegression(
-            C=C, max_iter=max_iter, random_state=42, n_jobs=-1
-        )
+        C        = cfg.C        if hasattr(cfg, "C")        else cfg.get("C", 1.0)
+        max_iter = cfg.max_iter if hasattr(cfg, "max_iter") else cfg.get("max_iter", 500)
+        seed     = cfg.seed     if hasattr(cfg, "seed")     else cfg.get("seed", 42)
+        kwargs   = dict(C=C, max_iter=max_iter)
+        if cfg.get("use_class_weights", False):
+            kwargs["class_weight"] = "balanced"
+            kwargs["n_jobs"] = -1
+            kwargs["random_state"] = seed
+            print(f"Loading Logistic Regression with CPU (sklearn) because class_weights is not supported by cuML")
+            from sklearn.linear_model import LogisticRegression as SKLogisticRegression
+            self._clf = SKLogisticRegression(**kwargs)
+        else:
+            print(f"Loading Logistic Regression with {_DEVICE}")
+            if not _CUML:
+                kwargs["n_jobs"] = -1
+                kwargs["random_state"] = seed
+            self._clf = LogisticRegression(**kwargs)
 
     def fit(self, X, y):
         self._clf.fit(X, y)
@@ -153,14 +247,20 @@ def _to_3d(X: np.ndarray) -> np.ndarray:
 
 @register_model("rocket")
 class RocketModel(BaseClassifier):
-    name = "ROCKET"
+    name      = "ROCKET"
+    _needs_3d = True
 
     def __init__(self, cfg):
         from sktime.classification.kernel_based import RocketClassifier
         n_kernels = (
             cfg.num_kernels if hasattr(cfg, "num_kernels") else cfg.get("num_kernels", 10_000)
         )
-        self._clf = RocketClassifier(num_kernels=n_kernels, random_state=42, n_jobs=-1)
+        seed   = cfg.seed         if hasattr(cfg, "seed")         else cfg.get("seed", 42)
+        
+        # Safely resolve n_jobs for Numba (cap at 72 to avoid ValueError)
+        n_jobs = min(os.cpu_count() or 1, 72)
+        
+        self._clf = RocketClassifier(num_kernels=n_kernels, random_state=seed, n_jobs=n_jobs)
 
     def fit(self, X, y):
         self._clf.fit(_to_3d(X), y)
@@ -175,14 +275,20 @@ class RocketModel(BaseClassifier):
 
 @register_model("minirocket")
 class MiniRocketModel(BaseClassifier):
-    name = "MiniROCKET"
+    name      = "MiniROCKET"
+    _needs_3d = True
 
     def __init__(self, cfg):
-        from sktime.classification.kernel_based import MiniRocketClassifier
+        from sktime.classification.kernel_based import RocketClassifier
         n_kernels = (
             cfg.num_kernels if hasattr(cfg, "num_kernels") else cfg.get("num_kernels", 10_000)
         )
-        self._clf = MiniRocketClassifier(num_kernels=n_kernels, random_state=42, n_jobs=-1)
+        seed   = cfg.seed         if hasattr(cfg, "seed")         else cfg.get("seed", 42)
+        
+        # Safely resolve n_jobs for Numba (cap at 72 to avoid ValueError)
+        n_jobs = min(os.cpu_count() or 1, 72)
+        
+        self._clf = RocketClassifier(num_kernels=n_kernels, random_state=seed, n_jobs=n_jobs, rocket_transform="minirocket")
 
     def fit(self, X, y):
         self._clf.fit(_to_3d(X), y)
@@ -197,15 +303,17 @@ class MiniRocketModel(BaseClassifier):
 
 @register_model("tsf")
 class TimeSeriesForestModel(BaseClassifier):
-    name = "Time Series Forest"
+    name      = "Time Series Forest"
+    _needs_3d = True
 
     def __init__(self, cfg):
         from sktime.classification.interval_based import TimeSeriesForestClassifier
         n_est = (
             cfg.n_estimators if hasattr(cfg, "n_estimators") else cfg.get("n_estimators", 50)
         )
+        seed   = cfg.seed         if hasattr(cfg, "seed")         else cfg.get("seed", 42)
         self._clf = TimeSeriesForestClassifier(
-            n_estimators=n_est, random_state=42, n_jobs=-1
+            n_estimators=n_est, random_state=seed, n_jobs=-1
         )
 
     def fit(self, X, y):
@@ -228,51 +336,71 @@ class TimeSeriesForestModel(BaseClassifier):
 # Input X is 2-D (N, F); we treat the F-length vector as a univariate time
 # series fed into Conv1d channels-first: (N, 1, F).
 
-class _LSTMCNNNet:
-    """Thin wrapper so the net is only built once fit() knows input shape."""
+class LSTMCNNPyTorchNet(nn.Module):
+    """Global module so Python can pickle it for the size check."""
+    def __init__(self, n_classes: int, hidden: int):
+        super().__init__()
+        self.cnn = nn.Sequential(
+            nn.Conv1d(1, 64, kernel_size=8, padding=4),
+            nn.BatchNorm1d(64),
+            nn.ReLU(),
+            nn.Conv1d(64, 64, kernel_size=5, padding=2),
+            nn.BatchNorm1d(64),
+            nn.ReLU(),
+        )
+        self.lstm = nn.LSTM(
+            input_size=64, hidden_size=hidden,
+            num_layers=2, batch_first=True, dropout=0.3,
+        )
+        self.fc = nn.Linear(hidden, n_classes)
 
-    def __init__(self, n_features: int, n_classes: int, hidden: int):
-        import torch.nn as nn
-
-        class _Net(nn.Module):
-            def __init__(self):
-                super().__init__()
-                self.cnn = nn.Sequential(
-                    nn.Conv1d(1, 64, kernel_size=8, padding=4),
-                    nn.BatchNorm1d(64),
-                    nn.ReLU(),
-                    nn.Conv1d(64, 64, kernel_size=5, padding=2),
-                    nn.BatchNorm1d(64),
-                    nn.ReLU(),
-                )
-                self.lstm = nn.LSTM(
-                    input_size=64, hidden_size=hidden,
-                    num_layers=2, batch_first=True, dropout=0.3,
-                )
-                self.fc = nn.Linear(hidden, n_classes)
-
-            def forward(self, x):          # x: (B, 1, F)
-                x = self.cnn(x)            # (B, 64, F')
-                x = x.permute(0, 2, 1)    # (B, F', 64) — seq-first for LSTM
-                _, (h, _) = self.lstm(x)  # h: (layers, B, hidden)
-                return self.fc(h[-1])      # (B, n_classes)
-
-        self.net = _Net()
+    def forward(self, x):          # x: (B, 1, F)
+        x = self.cnn(x)            # (B, 64, F')
+        x = x.permute(0, 2, 1)     # (B, F', 64) — seq-first for LSTM
+        _, (h, _) = self.lstm(x)   # h: (layers, B, hidden)
+        return self.fc(h[-1])      # (B, n_classes)
 
 
 @register_model("lstmcnn")
 class LSTMCNNModel(BaseClassifier):
-    name = "LSTM-CNN"
+    name      = "LSTM-CNN"
+    _is_torch = True
 
     def __init__(self, cfg):
         self._hidden     = cfg.lstm_hidden  if hasattr(cfg, "lstm_hidden")  else cfg.get("lstm_hidden",  128)
         self._epochs     = cfg.epochs       if hasattr(cfg, "epochs")       else cfg.get("epochs",       30)
         self._batch_size = cfg.batch_size   if hasattr(cfg, "batch_size")   else cfg.get("batch_size",   256)
+        self._seed       = cfg.seed         if hasattr(cfg, "seed")         else cfg.get("seed",         None)
+        self._use_class_weights = cfg.get("use_class_weights", False)
         self._net        = None
         self._classes    = None
 
+    # ------------------------------------------------------------------
+    # Reproducibility
+    # ------------------------------------------------------------------
+    def _seed_everything(self) -> None:
+        """Seed all RNGs that affect training.  No-op when seed is None."""
+        if self._seed is None:
+            return
+        import random, torch
+        random.seed(self._seed)
+        np.random.seed(self._seed)
+        torch.manual_seed(self._seed)
+        torch.cuda.manual_seed_all(self._seed)
+        # Sacrifice a little speed for deterministic CUDA kernels
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark     = False
+
+    def _make_generator(self):
+        """Return a seeded (or unseeded) torch.Generator for the DataLoader."""
+        g = torch.Generator()
+        if self._seed is not None:
+            g.manual_seed(self._seed)
+        return g
+
+    # ------------------------------------------------------------------
+
     def _device(self):
-        import torch
         if torch.cuda.is_available():
             return torch.device("cuda")
         if torch.backends.mps.is_available():
@@ -280,27 +408,41 @@ class LSTMCNNModel(BaseClassifier):
         return torch.device("cpu")
 
     def fit(self, X: np.ndarray, y: np.ndarray) -> "LSTMCNNModel":
-        import torch
-        import torch.nn as nn
+
         from torch.utils.data import DataLoader, TensorDataset
+
+        self._seed_everything()  # seed before any weight init or data shuffling
 
         self._classes = np.unique(y)
         n_classes  = len(self._classes)
         n_features = X.shape[1]
         device     = self._device()
 
-        wrapper = _LSTMCNNNet(n_features, n_classes, self._hidden)
-        self._net = wrapper.net.to(device)
+        self._net = LSTMCNNPyTorchNet(n_classes, self._hidden).to(device)
 
         X_t = torch.tensor(X[:, np.newaxis, :], dtype=torch.float32)  # (N,1,F)
         y_t = torch.tensor(y.astype(np.int64))
         loader = DataLoader(
             TensorDataset(X_t, y_t),
-            batch_size=self._batch_size, shuffle=True, drop_last=False,
+            batch_size=self._batch_size,
+            shuffle=True,
+            drop_last=False,
+            generator=self._make_generator(),   # reproducible shuffle order
+            worker_init_fn=(                    # seed DataLoader workers too
+                (lambda wid: np.random.seed(self._seed + wid))
+                if self._seed is not None else None
+            ),
         )
 
         optimiser = torch.optim.Adam(self._net.parameters(), lr=1e-3)
-        criterion = nn.CrossEntropyLoss()
+        if self._use_class_weights:
+            from sklearn.utils.class_weight import compute_class_weight
+            weights = compute_class_weight("balanced", classes=self._classes, y=y)
+            class_weights = torch.tensor(weights, dtype=torch.float32).to(device)
+            criterion = nn.CrossEntropyLoss(weight=class_weights)
+        else:
+            criterion = nn.CrossEntropyLoss()
+        
         self._net.train()
         for _ in range(self._epochs):
             for xb, yb in loader:
@@ -311,19 +453,30 @@ class LSTMCNNModel(BaseClassifier):
         return self
 
     def _forward(self, X: np.ndarray):
-        import torch
         self._net.eval()
         device = self._device()
-        X_t = torch.tensor(X[:, np.newaxis, :], dtype=torch.float32).to(device)
+        
+        # Keep the full tensor on the CPU initially to save VRAM
+        X_t = torch.tensor(X[:, np.newaxis, :], dtype=torch.float32)
+        
+        logits_list = []
         with torch.no_grad():
-            logits = self._net(X_t)
-        return logits.cpu().numpy()
+            # Process the data in chunks
+            for i in range(0, len(X_t), self._batch_size):
+                # Move only the current batch to the GPU
+                xb = X_t[i : i + self._batch_size].to(device)
+                logits = self._net(xb)
+                
+                # Immediately move the output back to CPU and store it
+                logits_list.append(logits.cpu().numpy())
+                
+        # Combine all batches into a single array
+        return np.concatenate(logits_list, axis=0)
 
     def predict(self, X: np.ndarray) -> np.ndarray:
         return self._classes[self._forward(X).argmax(axis=1)]
 
     def predict_proba(self, X: np.ndarray) -> np.ndarray:
-        import torch
         logits = self._forward(X)
         exp    = np.exp(logits - logits.max(axis=1, keepdims=True))
         return exp / exp.sum(axis=1, keepdims=True)

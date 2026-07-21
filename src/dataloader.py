@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 
-DATA_DIR = Path(__file__).parent.parent / "data"
+DATA_DIR = "/lus/lfs1aip2/projects/b5bb/public/final_data"
 
 # ── Sampling frequencies ─────────────────────────────────────────────────────
 # EMG:  ~1/0.000519 s ≈ 1926 Hz
@@ -63,7 +63,7 @@ def _parse_filename(fname: str) -> Optional[dict]:
 
 def list_sessions(subject=None, condition=None, modality="EMG") -> List[dict]:
     """Return metadata dicts for all matching *final* sessions."""
-    folder = DATA_DIR / modality
+    folder = f"{DATA_DIR}/{modality}"
     sessions = []
     for fname in sorted(os.listdir(folder)):
         info = _parse_filename(fname)
@@ -73,7 +73,7 @@ def list_sessions(subject=None, condition=None, modality="EMG") -> List[dict]:
             continue
         if condition and info["condition"] != condition:
             continue
-        info["path"] = folder / fname
+        info["path"] = f"{folder}/{fname}"
         sessions.append(info)
     return sessions
 
@@ -102,7 +102,16 @@ def load_emg(subject=None, condition=None, trial=None) -> pd.DataFrame:
 
 
 def load_imu(subject=None, condition=None, trial=None) -> pd.DataFrame:
-    """Load one or more final_IMU files into a single DataFrame."""
+    """
+    Load one or more final_IMU files into a single DataFrame.
+
+    Missing IMU values (sensor dropouts) are zero-filled, guaranteeing a
+    fixed-length feature vector across all sessions.
+
+    Returns
+    -------
+    df : Cleaned DataFrame. All IMU_ANGLES columns are always present with no NaNs.
+    """
     sessions = list_sessions(subject=subject, condition=condition, modality="IMU")
     if trial:
         sessions = [s for s in sessions if s["trial"] == trial]
@@ -123,7 +132,11 @@ def load_imu(subject=None, condition=None, trial=None) -> pd.DataFrame:
         raise FileNotFoundError(
             f"No IMU files found for subject={subject}, condition={condition}, trial={trial}"
         )
-    return pd.concat(frames, ignore_index=True)
+    df = pd.concat(frames, ignore_index=True)
+
+    df[IMU_ANGLES] = df[IMU_ANGLES].fillna(0.0)
+
+    return df
 
 
 # ── Sliding window ────────────────────────────────────────────────────────────
@@ -184,12 +197,16 @@ def sliding_windows(
         raise ValueError(f"unknown_handling must be 'drop' or 'backfill', got {unknown_handling!r}")
 
     X_list, y_list = [], []
-    for start in range(0, len(data) - window_size + 1, stride):
+    # Need enough data for the feature window AND the next label window
+    for start in range(0, len(data) - 2 * window_size + 1, stride):
         end            = start + window_size
-        window_labels  = pd.Series(labels[start:end])
+        label_start    = end
+        label_end      = end + window_size
+        
+        window_labels  = pd.Series(labels[label_start:label_end])
         valid_only     = window_labels[window_labels.isin(VALID_ACTIVITIES)]
         if valid_only.empty:
-            continue  # no valid label in this window → discard
+            continue  # no valid label in this next window → discard
         majority_label = valid_only.mode().iloc[0]
         X_list.append(data[start:end])
         y_list.append(majority_label)
